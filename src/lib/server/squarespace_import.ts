@@ -313,7 +313,21 @@ async function importPhoto(
 	position: number,
 	altText: string | undefined
 ): Promise<void> {
-	const res = await fetch(url);
+	// Squarespace's static1.squarespace.com host (used for older image
+	// references) hot-link-blocks based on User-Agent. Bot-shaped UAs
+	// (like our default 'sw-acoustics-inventory/0.0.1') get a 403 even
+	// though they'd be fine via the API. Browser-shaped headers pass.
+	// The newer images.squarespace-cdn.com host doesn't care, so this
+	// is harmless for it too.
+	const res = await fetch(url, {
+		headers: {
+			'User-Agent':
+				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+				'(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+			Referer: 'https://www.squarespace.com/'
+		}
+	});
 	if (!res.ok) throw new Error(`fetch ${url} → ${res.status}`);
 
 	const buf = await res.arrayBuffer();
