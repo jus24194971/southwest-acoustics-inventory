@@ -60,6 +60,11 @@ export const LABEL_TEMPLATES: Record<string, LabelTemplate> = {
 		widthMm: 88.9,
 		heightMm: 28.6,
 		label: 'DYMO 30252 Address (1.125" × 3.5")'
+	},
+	DYMO_30320: {
+		widthMm: 88.9,
+		heightMm: 25.4,
+		label: 'DYMO 30320 Address (1" × 3.5")'
 	}
 };
 
@@ -196,24 +201,36 @@ async function renderLabel(
 		return text.slice(0, lo) + '…';
 	};
 
-	// Y baselines from the top, in mm-from-bottom.
-	// Layout for 19mm-tall label, top to bottom in reading order:
-	//   Brand strip:        baseline ~ 15.5 mm
-	//   Primary line:       baseline ~ 11.2 mm
-	//   Secondary line:     baseline ~ 7.0 mm
-	//   Tertiary line:      baseline ~ 2.6 mm
-	// Bigger templates scale the same vertical rhythm.
-	const yBrand = (template.heightMm - 3.5) * MM;
-	const yPrimary = (template.heightMm - 7.8) * MM;
-	const ySecondary = (template.heightMm - 12.0) * MM;
-	const yTertiary = (template.heightMm - 16.4) * MM;
+	// Layout was tuned for a 19mm-tall label; everything (font sizes,
+	// vertical spacing) scales linearly with `scale` so a taller label
+	// fills its full height instead of crowding into the top corner.
+	// At scale=1 the layout matches the original 19×64mm look.
+	const scale = template.heightMm / 19;
+
+	// Y baselines from the top, in mm-from-bottom. The spacing
+	// constants (3.5, 7.8, 12.0, 16.4 mm) are the original layout for
+	// 19mm — they get multiplied by `scale` so a 25mm or 32mm label
+	// uses proportionally bigger gaps.
+	const yBrand = (template.heightMm - 3.5 * scale) * MM;
+	const yPrimary = (template.heightMm - 7.8 * scale) * MM;
+	const ySecondary = (template.heightMm - 12.0 * scale) * MM;
+	const yTertiary = (template.heightMm - 16.4 * scale) * MM;
+
+	// Font sizes scale the same way. Cap the upper bound on title /
+	// brand so they don't fight the SKU for visual weight on the
+	// biggest labels.
+	const fsBrand = 5 * scale;
+	const fsSku = 7 * scale;
+	const fsTitle = Math.min(6 * scale, 9);
+	const fsBinCode = 11 * scale;
+	const fsBinPath = 6 * scale;
 
 	// Brand strip — italic Fraunces-feel using Helvetica oblique
 	// since we don't have a custom font embedded yet.
 	page.drawText('Southwest Acoustics', {
 		x: textX,
 		y: yBrand,
-		size: 5,
+		size: fsBrand,
 		font: fonts.italic,
 		color: rgb(0.45, 0.36, 0.18) // gold-dim
 	});
@@ -228,7 +245,7 @@ async function renderLabel(
 		page.drawText(baseSku, {
 			x: textX,
 			y: yPrimary,
-			size: 7,
+			size: fsSku,
 			font: fonts.monoBold,
 			color: rgb(0, 0, 0)
 		});
@@ -237,17 +254,17 @@ async function renderLabel(
 			page.drawText(attrSku, {
 				x: textX,
 				y: ySecondary,
-				size: 7,
+				size: fsSku,
 				font: fonts.monoBold,
 				color: rgb(0, 0, 0)
 			});
 		}
 
-		const titleFitted = fitChars(label.title, fonts.sansFont, 6);
+		const titleFitted = fitChars(label.title, fonts.sansFont, fsTitle);
 		page.drawText(titleFitted, {
 			x: textX,
 			y: yTertiary,
-			size: 6,
+			size: fsTitle,
 			font: fonts.sansFont,
 			color: rgb(0.15, 0.15, 0.15)
 		});
@@ -255,12 +272,12 @@ async function renderLabel(
 		// Bin label — path on the secondary line so Dad can read the
 		// hierarchy at a glance; bin CODE big on the primary; name
 		// last.
-		const pathFitted = fitChars(label.path, fonts.sansFont, 6);
+		const pathFitted = fitChars(label.path, fonts.monoBold, fsBinPath);
 
 		page.drawText(label.code, {
 			x: textX,
 			y: yPrimary,
-			size: 11,
+			size: fsBinCode,
 			font: fonts.sansBold,
 			color: rgb(0, 0, 0)
 		});
@@ -268,17 +285,17 @@ async function renderLabel(
 		page.drawText(pathFitted, {
 			x: textX,
 			y: ySecondary,
-			size: 6,
+			size: fsBinPath,
 			font: fonts.monoBold,
 			color: rgb(0.2, 0.2, 0.2)
 		});
 
 		if (label.name) {
-			const nameFitted = fitChars(label.name, fonts.sansFont, 6);
+			const nameFitted = fitChars(label.name, fonts.italic, fsTitle);
 			page.drawText(nameFitted, {
 				x: textX,
 				y: yTertiary,
-				size: 6,
+				size: fsTitle,
 				font: fonts.italic,
 				color: rgb(0.2, 0.2, 0.2)
 			});
