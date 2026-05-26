@@ -59,12 +59,19 @@
 				<tbody class="divide-y divide-[color:var(--color-line-dim)]">
 					{#each data.items as item (item.id)}
 						<tr
-							class="transition-colors hover:bg-[color:var(--color-hover)] {item.retired_at
+							class="cursor-pointer transition-colors hover:bg-[color:var(--color-hover)] {item.retired_at
 								? 'text-[color:var(--color-ink-4)]'
 								: ''}"
+							onclick={() => (window.location.href = `/items/${encodeURIComponent(item.sku)}`)}
 						>
-							<td class="px-3 py-2.5 font-mono text-xs text-[color:var(--color-gold)]">
-								{item.sku}
+							<td class="px-3 py-2.5">
+								<a
+									href="/items/{encodeURIComponent(item.sku)}"
+									class="font-mono text-xs text-[color:var(--color-gold)] hover:text-[color:var(--color-gold-bright)]"
+									onclick={(e) => e.stopPropagation()}
+								>
+									{item.sku}
+								</a>
 							</td>
 							<td class="px-3 py-2.5">
 								<div class="font-medium text-[color:var(--color-ink)]">{item.title}</div>
