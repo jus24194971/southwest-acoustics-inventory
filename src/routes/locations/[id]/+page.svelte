@@ -316,6 +316,14 @@
 										{bin.item_count === 1 ? 'item' : 'items'}
 									</span>
 								{/if}
+								<a
+									href="/api/labels/bin/{bin.id}"
+									target="_blank"
+									class="btn-ghost px-2 py-1 text-[11px]"
+									title="Print a label for this bin"
+								>
+									Print
+								</a>
 								<button
 									type="button"
 									class="btn-ghost px-2 py-1 text-[11px]"

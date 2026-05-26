@@ -11,6 +11,7 @@
 		{ href: '/', label: 'Overview' },
 		{ href: '/items', label: 'Items' },
 		{ href: '/locations', label: 'Locations' },
+		{ href: '/labels', label: 'Labels' },
 		{ href: '/categories', label: 'Categories' },
 		{ href: '/movements', label: 'Movements' }
 	] as const;

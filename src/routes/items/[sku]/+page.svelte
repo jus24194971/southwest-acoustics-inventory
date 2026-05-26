@@ -185,6 +185,14 @@
 			<span class="text-xs text-[color:var(--color-ink-3)]">
 				Received {data.item.year_received}
 			</span>
+			<a
+				href="/api/labels/item/{encodeURIComponent(data.item.sku)}"
+				target="_blank"
+				class="btn-ghost ml-auto px-3 py-1 text-xs"
+				title="Open the printable label in a new tab"
+			>
+				Print label
+			</a>
 		</div>
 
 		{#if data.parent}
