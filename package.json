@@ -32,6 +32,10 @@
 		"wrangler": "^4.95.0"
 	},
 	"dependencies": {
+		"@anthropic-ai/sdk": "^0.98.1",
+		"@tiptap/core": "^3.23.6",
+		"@tiptap/extension-link": "^3.23.6",
+		"@tiptap/starter-kit": "^3.23.6",
 		"pdf-lib": "^1.17.1",
 		"qr-scanner": "^1.4.2",
 		"qrcode-generator": "^2.0.4"

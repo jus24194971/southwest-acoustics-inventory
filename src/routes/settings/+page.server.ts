@@ -27,17 +27,43 @@ export const load: PageServerLoad = async (event) => {
 	const preferences = await loadPreferences(db);
 
 	// Probe each external service we depend on. These run in parallel.
-	const [squarespace, r2Status, d1Status] = await Promise.all([
+	const [squarespace, anthropic, r2Status, d1Status] = await Promise.all([
 		probeSquarespace(event.platform?.env?.SQUARESPACE_API_KEY),
+		probeAnthropic(event.platform?.env?.ANTHROPIC_API_KEY),
 		probeR2(event.platform?.env?.PHOTOS),
 		probeD1(db)
 	]);
 
 	return {
 		preferences,
-		connections: [squarespace, r2Status, d1Status] as ConnectionStatus[]
+		connections: [squarespace, anthropic, r2Status, d1Status] as ConnectionStatus[]
 	};
 };
+
+async function probeAnthropic(apiKey: string | undefined): Promise<ConnectionStatus> {
+	if (!apiKey) {
+		return {
+			name: 'Anthropic (AI descriptions)',
+			state: 'missing',
+			detail:
+				'API key not set — run `wrangler pages secret put ANTHROPIC_API_KEY`. The "Suggest description" button on listings stays disabled without it.'
+		};
+	}
+	// Key-shape sanity check — actually pinging Anthropic on every
+	// settings page load would burn tokens for no reason.
+	if (!apiKey.startsWith('sk-ant-')) {
+		return {
+			name: 'Anthropic (AI descriptions)',
+			state: 'error',
+			detail: 'Key is set but doesn\'t look like an Anthropic key (expected sk-ant-… prefix).'
+		};
+	}
+	return {
+		name: 'Anthropic (AI descriptions)',
+		state: 'ok',
+		detail: 'API key configured · used for AI-suggested product descriptions (Haiku 4.5)'
+	};
+}
 
 async function probeSquarespace(apiKey: string | undefined): Promise<ConnectionStatus> {
 	if (!apiKey) {

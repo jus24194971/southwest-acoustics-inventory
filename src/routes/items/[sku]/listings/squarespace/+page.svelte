@@ -2,8 +2,69 @@
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import type { PageData, ActionData } from './$types';
+	import RichTextEditor from '$lib/components/RichTextEditor.svelte';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
+
+	// AI suggestion state ----------------------------------------------
+	let aiBusy = $state(false);
+	let aiError = $state<string | null>(null);
+	let aiSuggestion = $state<string | null>(null);
+	let aiUsage = $state<{ input: number; output: number } | null>(null);
+
+	// We bind to the editor so we can call its setHtml() when Dad
+	// accepts an AI suggestion — bypasses round-tripping through the
+	// hidden input.
+	let editorRef: { setHtml(html: string): void } | undefined = $state();
+
+	async function suggestDescription() {
+		aiBusy = true;
+		aiError = null;
+		aiSuggestion = null;
+		aiUsage = null;
+		try {
+			const res = await fetch(
+				`/api/listings/${data.item.id}/squarespace/suggest-description`,
+				{ method: 'POST' }
+			);
+			if (!res.ok) {
+				const text = await res.text();
+				aiError = `${res.status}: ${text.slice(0, 250)}`;
+				return;
+			}
+			const payload = (await res.json()) as {
+				html: string;
+				usage: {
+					input_tokens: number;
+					output_tokens: number;
+					cache_creation_input_tokens: number;
+					cache_read_input_tokens: number;
+				};
+			};
+			aiSuggestion = payload.html;
+			aiUsage = {
+				input: payload.usage.input_tokens + payload.usage.cache_read_input_tokens,
+				output: payload.usage.output_tokens
+			};
+		} catch (err) {
+			aiError = err instanceof Error ? err.message : String(err);
+		} finally {
+			aiBusy = false;
+		}
+	}
+
+	function useSuggestion() {
+		if (!aiSuggestion) return;
+		editorRef?.setHtml(aiSuggestion);
+		aiSuggestion = null;
+		aiUsage = null;
+	}
+
+	function dismissSuggestion() {
+		aiSuggestion = null;
+		aiError = null;
+		aiUsage = null;
+	}
 
 	// Parse the JSON tag array back into a comma-separated string for the
 	// tag input. Tagging UI is a basic comma-separated field for now —
@@ -145,18 +206,80 @@
 		</div>
 
 		<div class="space-y-1.5">
-			<label for="listing_description_html" class="eyebrow block">
-				Listing description <span class="lowercase text-[color:var(--color-ink-4)]">(HTML)</span>
-			</label>
-			<textarea
-				id="listing_description_html"
+			<div class="flex items-baseline justify-between gap-3">
+				<span class="eyebrow">Listing description</span>
+				<button
+					type="button"
+					class="btn-ghost px-2 py-1 text-[11px]"
+					onclick={suggestDescription}
+					disabled={aiBusy || !data.hasAiKey}
+					title={data.hasAiKey
+						? 'Generate a draft from this item with Claude Haiku'
+						: 'ANTHROPIC_API_KEY not configured'}
+				>
+					{aiBusy ? 'Drafting…' : '✨ Suggest with AI'}
+				</button>
+			</div>
+
+			<RichTextEditor
+				bind:this={editorRef}
 				name="listing_description_html"
-				rows="8"
-				class="field font-mono text-xs"
-				placeholder="<p>…</p>">{initial.description}</textarea>
+				initialHtml={initial.description}
+				placeholder="Write a customer-facing description, or hit Suggest with AI to draft one from this item's attributes…"
+			/>
+
 			<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
-				Customer-facing description, HTML. Defaults to the item's description.
+				Customer-facing description. Bold, italic, headings, lists, and links — the toolbar
+				covers the basics. The HTML it produces is what gets sent to Squarespace.
 			</p>
+
+			{#if aiError}
+				<div
+					class="rounded border border-[color:var(--color-rust)] bg-[color:var(--color-input)] px-3 py-2 text-xs text-[color:var(--color-rust-bright)]"
+				>
+					{aiError}
+				</div>
+			{/if}
+
+			{#if aiSuggestion}
+				<div
+					class="rounded border border-[color:var(--color-gold-dim)] bg-[color:var(--color-input)] p-3"
+				>
+					<div class="flex items-baseline justify-between gap-3">
+						<p class="eyebrow text-[color:var(--color-gold-bright)]">
+							AI suggestion · preview
+						</p>
+						{#if aiUsage}
+							<p class="font-mono text-[10px] text-[color:var(--color-ink-4)]">
+								{aiUsage.input} in / {aiUsage.output} out
+							</p>
+						{/if}
+					</div>
+					<div class="description-body mt-2 max-h-72 overflow-y-auto rounded bg-[color:var(--color-shell)] p-3 text-sm">
+						{@html aiSuggestion}
+					</div>
+					<div class="mt-3 flex flex-wrap gap-2">
+						<button type="button" class="btn-primary px-3 py-1.5 text-xs" onclick={useSuggestion}>
+							Use this
+						</button>
+						<button
+							type="button"
+							class="btn-ghost px-3 py-1.5 text-xs"
+							onclick={suggestDescription}
+							disabled={aiBusy}
+						>
+							{aiBusy ? 'Drafting…' : 'Try again'}
+						</button>
+						<button
+							type="button"
+							class="btn-ghost px-3 py-1.5 text-xs"
+							onclick={dismissSuggestion}
+						>
+							Dismiss
+						</button>
+					</div>
+				</div>
+			{/if}
 		</div>
 
 		<div class="grid gap-4 sm:grid-cols-2">

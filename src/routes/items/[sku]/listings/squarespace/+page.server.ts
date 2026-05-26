@@ -83,7 +83,8 @@ export const load: PageServerLoad = async (event) => {
 		listing,
 		storefronts,
 		storefrontsError,
-		hasApiKey: !!apiKey
+		hasApiKey: !!apiKey,
+		hasAiKey: !!event.platform?.env?.ANTHROPIC_API_KEY
 	};
 };
 

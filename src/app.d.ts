@@ -21,6 +21,9 @@ declare global {
 				/** Squarespace Commerce API key. Set via `wrangler pages secret put
 				 *  SQUARESPACE_API_KEY` for prod, and `.dev.vars` for local. */
 				SQUARESPACE_API_KEY?: string;
+				/** Anthropic API key for AI-generated product descriptions. Set
+				 *  via `wrangler pages secret put ANTHROPIC_API_KEY`. */
+				ANTHROPIC_API_KEY?: string;
 			};
 			context: {
 				waitUntil(promise: Promise<unknown>): void;
