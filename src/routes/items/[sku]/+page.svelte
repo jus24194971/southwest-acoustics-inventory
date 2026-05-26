@@ -151,6 +151,11 @@
 	function isUnq(value: string): boolean {
 		return value.trim().toUpperCase() === 'UNQ';
 	}
+
+	// Currently-active Squarespace listing for the sidebar pill /
+	// "Open on Squarespace" link. Derived rather than recomputed in
+	// the template so we can use it from anywhere.
+	let ssListing = $derived(data.listings.find((l) => l.platform === 'squarespace') ?? null);
 </script>
 
 <section class="space-y-6">
@@ -343,25 +348,58 @@
 				</p>
 			</div>
 
-			<!-- SQUARESPACE LINK ---------------------------------- -->
-			{#if data.item.squarespace_product_id}
-				<div class="panel px-4 py-3">
-					<p class="eyebrow mb-2">Squarespace</p>
-					<p class="break-all font-mono text-[10px] text-[color:var(--color-ink-3)]">
-						{data.item.squarespace_product_id}
+			<!-- LISTINGS ------------------------------------------ -->
+			<div class="panel space-y-2 px-4 py-3">
+				<p class="eyebrow">Listings</p>
+
+				<!-- Squarespace row -->
+				<a
+					href="/items/{encodeURIComponent(data.item.sku)}/listings/squarespace"
+					class="flex items-baseline gap-2 rounded px-1 py-1 transition-colors hover:bg-[color:var(--color-hover)]"
+				>
+					<span class="text-sm font-medium text-[color:var(--color-ink)]">Squarespace</span>
+					{#if ssListing}
+						<span
+							class={ssListing.status === 'live'
+								? 'pill pill-success'
+								: ssListing.status === 'ready'
+									? 'pill pill-warn'
+									: ssListing.status === 'error'
+										? 'pill pill-danger'
+										: 'pill'}
+						>
+							{ssListing.status}
+						</span>
+					{:else}
+						<span class="pill text-[10px] text-[color:var(--color-ink-3)]">Not listed</span>
+					{/if}
+					<span class="ml-auto text-[10px] text-[color:var(--color-ink-3)]">Edit →</span>
+				</a>
+				{#if ssListing?.last_synced_at}
+					<p class="px-1 text-[10px] italic text-[color:var(--color-ink-4)]">
+						last synced {shortWhen(ssListing.last_synced_at)}
 					</p>
-					{#if data.item.squarespace_sku}
-						<p class="mt-1 text-xs">
-							SS SKU: <span class="font-mono text-[color:var(--color-ink-2)]">{data.item.squarespace_sku}</span>
-						</p>
-					{/if}
-					{#if data.item.squarespace_synced_at}
-						<p class="mt-1 text-[10px] italic text-[color:var(--color-ink-4)]">
-							last synced {shortWhen(data.item.squarespace_synced_at)}
-						</p>
-					{/if}
+				{/if}
+				{#if ssListing?.external_url}
+					<a
+						href={ssListing.external_url}
+						target="_blank"
+						class="px-1 text-[11px] text-[color:var(--color-gold-bright)] hover:underline"
+					>
+						Open on Squarespace ↗
+					</a>
+				{/if}
+
+				<!-- Stubs for future platforms -->
+				<div class="flex items-baseline gap-2 px-1 py-1 opacity-50">
+					<span class="text-sm text-[color:var(--color-ink-2)]">eBay</span>
+					<span class="pill text-[10px]">Coming soon</span>
 				</div>
-			{/if}
+				<div class="flex items-baseline gap-2 px-1 py-1 opacity-50">
+					<span class="text-sm text-[color:var(--color-ink-2)]">Reverb</span>
+					<span class="pill text-[10px]">Coming soon</span>
+				</div>
+			</div>
 
 			<!-- RETIRE / UNRETIRE --------------------------------- -->
 			{#if data.item.retired_at}

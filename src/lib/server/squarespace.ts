@@ -83,6 +83,14 @@ export class SquarespaceError extends Error {
 	}
 }
 
+function authHeaders(apiKey: string): Record<string, string> {
+	return {
+		Authorization: `Bearer ${apiKey}`,
+		'User-Agent': 'sw-acoustics-inventory/0.0.1',
+		Accept: 'application/json'
+	};
+}
+
 /** Fetch one page of products. `cursor` is the pagination cursor from a
  *  previous response; omit for the first page. */
 export async function listProducts(
@@ -92,19 +100,92 @@ export async function listProducts(
 	const url = new URL(`${BASE_URL}/commerce/products`);
 	if (options.cursor) url.searchParams.set('cursor', options.cursor);
 
-	const res = await fetch(url.toString(), {
-		headers: {
-			Authorization: `Bearer ${apiKey}`,
-			// User-Agent is required by Squarespace's API gateway.
-			'User-Agent': 'sw-acoustics-inventory/0.0.1',
-			Accept: 'application/json'
-		}
-	});
-
+	const res = await fetch(url.toString(), { headers: authHeaders(apiKey) });
 	const body = await res.text();
-	if (!res.ok) {
-		throw new SquarespaceError(res.status, body);
-	}
-
+	if (!res.ok) throw new SquarespaceError(res.status, body);
 	return JSON.parse(body) as SquarespaceListResponse<SquarespaceProduct>;
+}
+
+// =====================================================================
+// Store pages — Dad's storefronts. We need these for the SS storePageId
+// when creating new products. Cached client-side once fetched.
+// =====================================================================
+
+export interface SquarespaceStorePage {
+	id: string;
+	title: string;
+}
+
+interface StorePagesResponse {
+	storePages?: SquarespaceStorePage[];
+}
+
+export async function listStorePages(apiKey: string): Promise<SquarespaceStorePage[]> {
+	const res = await fetch(`${BASE_URL}/commerce/store_pages`, {
+		headers: authHeaders(apiKey)
+	});
+	const body = await res.text();
+	if (!res.ok) throw new SquarespaceError(res.status, body);
+	const data = JSON.parse(body) as StorePagesResponse;
+	return data.storePages ?? [];
+}
+
+// =====================================================================
+// Push: create / update products.
+//
+// The payload shape mirrors what we receive from listProducts() —
+// products with one or more variants; each variant has its own SKU,
+// price, and stock. For inventory items we typically push a single
+// variant per product (per-physical-item) until we wire the
+// parent/variant grouping into the listing builder.
+// =====================================================================
+
+export interface SquarespaceProductWritePayload {
+	type: 'PHYSICAL' | 'DIGITAL' | 'SERVICE' | 'GIFT_CARD';
+	storePageId?: string;
+	name: string;
+	description?: string; // HTML
+	urlSlug?: string;
+	tags?: string[];
+	isVisible?: boolean;
+	variants: Array<{
+		sku: string;
+		pricing: {
+			basePrice: { value: string; currency: string };
+		};
+		stock?: { quantity: number; unlimited: boolean };
+		attributes?: Record<string, string>;
+	}>;
+	// Squarespace's documented field is `images` (an array of objects
+	// describing each image). For pushing without re-uploading we omit
+	// it entirely so SS leaves the existing images alone on updates.
+}
+
+export async function createProduct(
+	apiKey: string,
+	payload: SquarespaceProductWritePayload
+): Promise<SquarespaceProduct> {
+	const res = await fetch(`${BASE_URL}/commerce/products`, {
+		method: 'POST',
+		headers: { ...authHeaders(apiKey), 'content-type': 'application/json' },
+		body: JSON.stringify(payload)
+	});
+	const body = await res.text();
+	if (!res.ok) throw new SquarespaceError(res.status, body);
+	return JSON.parse(body) as SquarespaceProduct;
+}
+
+export async function updateProduct(
+	apiKey: string,
+	productId: string,
+	payload: Partial<SquarespaceProductWritePayload>
+): Promise<SquarespaceProduct> {
+	const res = await fetch(`${BASE_URL}/commerce/products/${encodeURIComponent(productId)}`, {
+		method: 'PUT',
+		headers: { ...authHeaders(apiKey), 'content-type': 'application/json' },
+		body: JSON.stringify(payload)
+	});
+	const body = await res.text();
+	if (!res.ok) throw new SquarespaceError(res.status, body);
+	return JSON.parse(body) as SquarespaceProduct;
 }

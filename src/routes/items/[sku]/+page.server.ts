@@ -248,9 +248,28 @@ export const load: PageServerLoad = async (event) => {
 			sort_order: number;
 		}>();
 
+	// Marketplace listings — per-platform status for the sidebar panel.
+	const { results: listings } = await db
+		.prepare(
+			`SELECT platform, status, external_id, external_url, last_synced_at,
+			        last_sync_status, listing_visible
+			 FROM marketplace_listing WHERE item_id = ?`
+		)
+		.bind(item.id)
+		.all<{
+			platform: string;
+			status: string;
+			external_id: string | null;
+			external_url: string | null;
+			last_synced_at: string | null;
+			last_sync_status: string | null;
+			listing_visible: number;
+		}>();
+
 	return {
 		item,
 		attrValues,
+		listings,
 		photos: photos.results as PhotoRow[],
 		movements: movements.results as MovementRow[],
 		bins: bins.results as Array<{
