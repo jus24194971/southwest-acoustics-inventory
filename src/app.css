@@ -1,23 +1,267 @@
 @import 'tailwindcss';
 
-/* Brand tokens — keep these in sync with the parent Listing Studio palette
-   so anything that ever ends up shared (labels, exports) feels like one shop. */
+/* =============================================================
+   Brand tokens, ported from Listing Studio's tokens.css.
+   Palette sampled from the Southwest Acoustics logo (gold #B2935B).
+   Treat these as the single source of truth — never use raw hex
+   in components.
+   ============================================================= */
+
 @theme {
-	--color-brand-cream: #fdf8ee;
-	--color-brand-gold: #c39d3a;
-	--color-brand-ink: #1f2128;
-	--font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+	/* Backgrounds (darkest → lightest) */
+	--color-shell: #1b1813;
+	--color-panel: #26211a;
+	--color-panel-2: #2e2820;
+	--color-input: #16130f;
+	--color-hover: #362e25;
+	--color-selected: #463a2b;
+
+	/* Borders & lines (dim → bright) */
+	--color-line-dim: #382f23;
+	--color-line: #4f4230;
+	--color-line-bright: #685636;
+
+	/* Text (brightest → dimmest) */
+	--color-ink: #ece0c8;
+	--color-ink-2: #cdb98f;
+	--color-ink-3: #8a7b5e;
+	--color-ink-4: #5d5239;
+
+	/* Brand gold, sampled from the Southwest Acoustics logo */
+	--color-gold: #b2935b;
+	--color-gold-bright: #d6b074;
+	--color-gold-dim: #7a6238;
+	--color-gold-deep: #5a4624;
+
+	/* Sonoran accents — status / category tinting */
+	--color-terra: #a8612e;
+	--color-moss: #6e8c3e;
+	--color-moss-bright: #95b557;
+	--color-rust: #a24228;
+	--color-rust-bright: #c95535;
+
+	/* Type — Fraunces for display, Inter Tight for body, JetBrains for mono */
+	--font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+	--font-sans: 'Inter Tight', system-ui, -apple-system, sans-serif;
+	--font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
-/* Make tap targets comfortable on the phone — Dad is on the shop floor,
-   often gloved or with dusty hands. 44px minimum is the iOS HIG target. */
+/* =============================================================
+   Body + global chrome
+   ============================================================= */
+
+html {
+	background: #12100c;
+}
+
+body {
+	font-family: var(--font-sans);
+	/* Warm radial vignette — same approach as Listing Studio so the two
+	   apps feel like one shop. */
+	background: radial-gradient(ellipse at top, #26211a 0%, #12100c 80%);
+	color: var(--color-ink);
+	font-size: 14px;
+	line-height: 1.45;
+	min-height: 100vh;
+	-webkit-font-smoothing: antialiased;
+}
+
+/* Faint vertical scan-lines on the body — pure workshop vibe, almost
+   imperceptible but lifts the dead-flat dark background. */
+body::before {
+	content: '';
+	position: fixed;
+	inset: 0;
+	pointer-events: none;
+	z-index: 0;
+	background-image: repeating-linear-gradient(
+		91deg,
+		rgba(140, 110, 70, 0.018) 0px,
+		rgba(140, 110, 70, 0.018) 1px,
+		transparent 1px,
+		transparent 3px
+	);
+}
+
+/* Shop-floor reality: Dad uses gloved or dusty hands. 44px is the iOS HIG
+   minimum tap target — apply it to anything tappable so the phone UX works. */
 button,
 [role='button'],
-input[type='submit'] {
-	min-height: 44px;
-}
+input[type='submit'],
 input,
 select,
 textarea {
 	min-height: 44px;
+}
+
+/* =============================================================
+   Reusable component classes — kept thin so most styling can live
+   inline as Tailwind utilities. Use these when a pattern recurs
+   enough that re-typing the utility chain hurts readability.
+   ============================================================= */
+
+@layer components {
+	/* Primary call-to-action — molten-gold bar with inset highlight,
+	   like the brand on the Listing Studio toolbar. */
+	.btn-primary {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		padding: 0.625rem 1rem;
+		font-family: var(--font-sans);
+		font-weight: 600;
+		font-size: 0.875rem;
+		color: #251a0a;
+		background: linear-gradient(
+			180deg,
+			var(--color-gold-bright) 0%,
+			var(--color-gold) 60%,
+			var(--color-gold-dim) 100%
+		);
+		border: 1px solid var(--color-gold-deep);
+		border-radius: 4px;
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.3),
+			inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+			0 1px 2px rgba(0, 0, 0, 0.4);
+		cursor: pointer;
+		transition: filter 0.12s ease;
+		text-decoration: none;
+	}
+	.btn-primary:hover {
+		filter: brightness(1.08);
+	}
+	.btn-primary:active {
+		filter: brightness(0.95);
+	}
+
+	/* Ghost button — outlined, used for secondary actions and Cancel. */
+	.btn-ghost {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		padding: 0.625rem 1rem;
+		font-family: var(--font-sans);
+		font-weight: 500;
+		font-size: 0.875rem;
+		color: var(--color-ink-2);
+		background: transparent;
+		border: 1px solid var(--color-line);
+		border-radius: 4px;
+		cursor: pointer;
+		transition: all 0.12s ease;
+		text-decoration: none;
+	}
+	.btn-ghost:hover {
+		background: var(--color-hover);
+		border-color: var(--color-line-bright);
+		color: var(--color-ink);
+	}
+
+	/* Panel — the recurring card surface. Subtle inset highlight on top,
+	   shadow on bottom. */
+	.panel {
+		background: var(--color-panel);
+		border: 1px solid var(--color-line-dim);
+		border-radius: 6px;
+		box-shadow:
+			inset 0 1px 0 rgba(255, 230, 180, 0.04),
+			0 4px 16px rgba(0, 0, 0, 0.25);
+	}
+
+	/* Form inputs — dark wells with gold focus ring. */
+	.field {
+		display: block;
+		width: 100%;
+		padding: 0.625rem 0.75rem;
+		font-family: var(--font-sans);
+		font-size: 0.875rem;
+		color: var(--color-ink);
+		background: var(--color-input);
+		border: 1px solid var(--color-line);
+		border-radius: 4px;
+		transition: border-color 0.15s ease, box-shadow 0.15s ease;
+	}
+	.field:focus {
+		outline: none;
+		border-color: var(--color-gold);
+		box-shadow: 0 0 0 3px rgba(178, 147, 91, 0.18);
+	}
+	.field::placeholder {
+		color: var(--color-ink-4);
+	}
+
+	/* Section headlines — italic Fraunces, the brand voice. */
+	.headline {
+		font-family: var(--font-display);
+		font-style: italic;
+		font-weight: 500;
+		color: var(--color-ink);
+		letter-spacing: -0.01em;
+	}
+
+	/* Eyebrow / overline — tiny uppercase mono, like an old workshop label. */
+	.eyebrow {
+		font-family: var(--font-mono);
+		font-size: 0.6875rem;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: var(--color-ink-3);
+	}
+
+	/* Status pills — muted backgrounds with category accents. */
+	.pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.125rem 0.5rem;
+		font-family: var(--font-mono);
+		font-size: 0.6875rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		border-radius: 999px;
+		border: 1px solid var(--color-line);
+		color: var(--color-ink-2);
+		background: rgba(110, 140, 62, 0); /* base, accent variants override */
+	}
+	.pill-success {
+		color: var(--color-moss-bright);
+		border-color: rgba(110, 140, 62, 0.4);
+		background: rgba(110, 140, 62, 0.1);
+	}
+	.pill-warn {
+		color: var(--color-gold-bright);
+		border-color: rgba(178, 147, 91, 0.4);
+		background: rgba(178, 147, 91, 0.08);
+	}
+	.pill-danger {
+		color: var(--color-rust-bright);
+		border-color: rgba(162, 66, 40, 0.4);
+		background: rgba(162, 66, 40, 0.1);
+	}
+}
+
+/* =============================================================
+   Scrollbars — thin, gold-on-dark to match the chrome.
+   ============================================================= */
+
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+::-webkit-scrollbar-thumb {
+	background: var(--color-line);
+	border-radius: 5px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: var(--color-line-bright);
+	background-clip: padding-box;
+	border: 2px solid transparent;
 }

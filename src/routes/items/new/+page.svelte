@@ -6,57 +6,50 @@
 	const currentYear = new Date().getFullYear();
 </script>
 
-<section class="space-y-4">
-	<div>
-		<h1 class="text-2xl font-semibold tracking-tight">Add an item</h1>
-		<p class="mt-1 text-sm text-slate-600">
-			The SKU is generated for you — you just fill in what it is.
+<section class="mx-auto max-w-2xl space-y-6">
+	<header class="space-y-1">
+		<p class="eyebrow">Receive</p>
+		<h1 class="headline text-3xl">Add an item</h1>
+		<p class="text-sm text-[color:var(--color-ink-3)]">
+			The SKU is generated for you — just describe what it is and where it lives.
 		</p>
-	</div>
+	</header>
 
-	<form method="POST" class="space-y-4">
-		<div>
-			<label for="title" class="block text-sm font-medium text-slate-700">Title</label>
+	<form method="POST" class="panel space-y-5 px-6 py-6">
+		<!-- Title — the human-readable description. Most important field. -->
+		<div class="space-y-1.5">
+			<label for="title" class="eyebrow block">Title</label>
 			<input
 				id="title"
 				name="title"
 				type="text"
 				required
 				placeholder="Seymour Duncan JB Jr pickup, neck position"
-				class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+				class="field"
 			/>
 			{#if form?.errors?.title}
-				<p class="mt-1 text-xs text-red-600">{form.errors.title}</p>
+				<p class="text-xs text-[color:var(--color-rust-bright)]">{form.errors.title}</p>
 			{/if}
 		</div>
 
-		<div class="grid grid-cols-2 gap-3">
-			<div>
-				<label for="category_id" class="block text-sm font-medium text-slate-700">Category</label>
-				<select
-					id="category_id"
-					name="category_id"
-					required
-					class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-				>
+		<!-- Category + condition, side-by-side because both are required pickers. -->
+		<div class="grid grid-cols-2 gap-4">
+			<div class="space-y-1.5">
+				<label for="category_id" class="eyebrow block">Category</label>
+				<select id="category_id" name="category_id" required class="field">
 					<option value="">— pick one —</option>
 					{#each data.categories as cat (cat.id)}
 						<option value={cat.id}>{cat.code} · {cat.name}</option>
 					{/each}
 				</select>
 				{#if form?.errors?.category_id}
-					<p class="mt-1 text-xs text-red-600">{form.errors.category_id}</p>
+					<p class="text-xs text-[color:var(--color-rust-bright)]">{form.errors.category_id}</p>
 				{/if}
 			</div>
 
-			<div>
-				<label for="condition" class="block text-sm font-medium text-slate-700">Condition</label>
-				<select
-					id="condition"
-					name="condition"
-					required
-					class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-				>
+			<div class="space-y-1.5">
+				<label for="condition" class="eyebrow block">Condition</label>
+				<select id="condition" name="condition" required class="field">
 					<option value="">— pick one —</option>
 					<option value="N">New</option>
 					<option value="U">Used</option>
@@ -64,22 +57,19 @@
 					<option value="B">Broken / for parts</option>
 				</select>
 				{#if form?.errors?.condition}
-					<p class="mt-1 text-xs text-red-600">{form.errors.condition}</p>
+					<p class="text-xs text-[color:var(--color-rust-bright)]">{form.errors.condition}</p>
 				{/if}
 			</div>
 		</div>
 
-		<div class="grid grid-cols-2 gap-3">
-			<div>
-				<label for="brand_id" class="block text-sm font-medium text-slate-700"
-					>Brand <span class="text-slate-400">(optional)</span></label
-				>
+		<!-- Brand + model. Both feed the SKU. -->
+		<div class="grid grid-cols-2 gap-4">
+			<div class="space-y-1.5">
+				<label for="brand_id" class="eyebrow block">
+					Brand <span class="lowercase tracking-normal text-[color:var(--color-ink-4)]">(optional)</span>
+				</label>
 				{#if data.brands.length > 0}
-					<select
-						id="brand_id"
-						name="brand_id"
-						class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-					>
+					<select id="brand_id" name="brand_id" class="field">
 						<option value="">— none —</option>
 						{#each data.brands as brand (brand.id)}
 							<option value={brand.id}>{brand.code} · {brand.name}</option>
@@ -92,35 +82,34 @@
 						type="text"
 						maxlength="3"
 						placeholder="FEN"
-						class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 font-mono uppercase shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+						class="field font-mono uppercase"
 					/>
-					<p class="mt-1 text-xs text-slate-500">
-						No brands saved yet — 3-letter code (e.g. FEN, GIB, SEY).
+					<p class="text-[11px] text-[color:var(--color-ink-3)]">
+						No brands saved yet — type a 3-letter code (e.g. FEN, GIB, SEY).
 					</p>
 				{/if}
 			</div>
 
-			<div>
-				<label for="model" class="block text-sm font-medium text-slate-700">Model</label>
+			<div class="space-y-1.5">
+				<label for="model" class="eyebrow block">Model</label>
 				<input
 					id="model"
 					name="model"
 					type="text"
 					required
 					placeholder="STR"
-					class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+					class="field font-mono uppercase"
 				/>
 				{#if form?.errors?.model}
-					<p class="mt-1 text-xs text-red-600">{form.errors.model}</p>
+					<p class="text-xs text-[color:var(--color-rust-bright)]">{form.errors.model}</p>
 				{/if}
 			</div>
 		</div>
 
-		<div class="grid grid-cols-2 gap-3">
-			<div>
-				<label for="year_received" class="block text-sm font-medium text-slate-700"
-					>Year received</label
-				>
+		<!-- Year received + bin. Year defaults to current year. -->
+		<div class="grid grid-cols-2 gap-4">
+			<div class="space-y-1.5">
+				<label for="year_received" class="eyebrow block">Year received</label>
 				<input
 					id="year_received"
 					name="year_received"
@@ -128,19 +117,15 @@
 					min="2000"
 					max="2100"
 					value={currentYear}
-					class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+					class="field"
 				/>
 			</div>
 
-			<div>
-				<label for="bin_id" class="block text-sm font-medium text-slate-700"
-					>Bin <span class="text-slate-400">(optional)</span></label
-				>
-				<select
-					id="bin_id"
-					name="bin_id"
-					class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-				>
+			<div class="space-y-1.5">
+				<label for="bin_id" class="eyebrow block">
+					Bin <span class="lowercase tracking-normal text-[color:var(--color-ink-4)]">(optional)</span>
+				</label>
+				<select id="bin_id" name="bin_id" class="field">
 					<option value="">— unassigned —</option>
 					{#each data.bins as bin (bin.id)}
 						<option value={bin.id}>{bin.loc_code} / {bin.bin_code} ({bin.loc_name})</option>
@@ -149,11 +134,12 @@
 			</div>
 		</div>
 
-		<div class="grid grid-cols-2 gap-3">
-			<div>
-				<label for="cost" class="block text-sm font-medium text-slate-700"
-					>Cost <span class="text-slate-400">($)</span></label
-				>
+		<!-- Money. Cost is what Dad paid; price is what he asks. -->
+		<div class="grid grid-cols-2 gap-4">
+			<div class="space-y-1.5">
+				<label for="cost" class="eyebrow block">
+					Cost <span class="lowercase tracking-normal text-[color:var(--color-ink-4)]">($)</span>
+				</label>
 				<input
 					id="cost"
 					name="cost"
@@ -161,13 +147,13 @@
 					step="0.01"
 					min="0"
 					placeholder="0.00"
-					class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+					class="field"
 				/>
 			</div>
-			<div>
-				<label for="price" class="block text-sm font-medium text-slate-700"
-					>Price <span class="text-slate-400">($)</span></label
-				>
+			<div class="space-y-1.5">
+				<label for="price" class="eyebrow block">
+					Price <span class="lowercase tracking-normal text-[color:var(--color-ink-4)]">($)</span>
+				</label>
 				<input
 					id="price"
 					name="price"
@@ -175,36 +161,22 @@
 					step="0.01"
 					min="0"
 					placeholder="0.00"
-					class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+					class="field"
 				/>
 			</div>
 		</div>
 
-		<div>
-			<label for="description" class="block text-sm font-medium text-slate-700"
-				>Description <span class="text-slate-400">(optional)</span></label
-			>
-			<textarea
-				id="description"
-				name="description"
-				rows="3"
-				class="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-			></textarea>
+		<div class="space-y-1.5">
+			<label for="description" class="eyebrow block">
+				Description
+				<span class="lowercase tracking-normal text-[color:var(--color-ink-4)]">(optional)</span>
+			</label>
+			<textarea id="description" name="description" rows="3" class="field"></textarea>
 		</div>
 
-		<div class="flex gap-2">
-			<button
-				type="submit"
-				class="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
-			>
-				Save item
-			</button>
-			<a
-				href="/items"
-				class="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-100"
-			>
-				Cancel
-			</a>
+		<div class="flex gap-2 border-t border-[color:var(--color-line-dim)] pt-5">
+			<button type="submit" class="btn-primary">Save item</button>
+			<a href="/items" class="btn-ghost">Cancel</a>
 		</div>
 	</form>
 </section>

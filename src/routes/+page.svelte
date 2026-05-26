@@ -4,51 +4,53 @@
 	let { data }: { data: PageData } = $props();
 </script>
 
-<section class="space-y-6">
-	<div>
-		<h1 class="text-2xl font-semibold tracking-tight">Shop floor at a glance</h1>
-		<p class="mt-1 text-sm text-slate-600">
-			One row per part, one source of truth. Squarespace mirrors what's here.
+<section class="space-y-8">
+	<header class="space-y-2">
+		<p class="eyebrow">Shop floor at a glance</p>
+		<h1 class="headline text-3xl">The current state of the bench.</h1>
+		<p class="max-w-xl text-sm text-[color:var(--color-ink-3)]">
+			One row per part. One source of truth. Squarespace mirrors what lives here — never the
+			other way around.
 		</p>
-	</div>
+	</header>
 
+	<!-- Stat tiles. Each links to its detail view where applicable. -->
 	<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
 		<a
 			href="/items"
-			class="rounded-lg border border-slate-200 bg-white p-4 hover:border-slate-400"
+			class="panel group flex flex-col gap-1 px-4 py-4 transition-colors hover:border-[color:var(--color-gold-dim)]"
 		>
-			<div class="text-3xl font-semibold">{data.stats.itemsOnHand}</div>
-			<div class="mt-1 text-xs text-slate-500">items on hand</div>
+			<span class="eyebrow">Items on hand</span>
+			<span
+				class="headline text-3xl text-[color:var(--color-ink)] transition-colors group-hover:text-[color:var(--color-gold-bright)]"
+			>
+				{data.stats.itemsOnHand}
+			</span>
 		</a>
 		<a
 			href="/locations"
-			class="rounded-lg border border-slate-200 bg-white p-4 hover:border-slate-400"
+			class="panel group flex flex-col gap-1 px-4 py-4 transition-colors hover:border-[color:var(--color-gold-dim)]"
 		>
-			<div class="text-3xl font-semibold">{data.stats.locations}</div>
-			<div class="mt-1 text-xs text-slate-500">locations</div>
+			<span class="eyebrow">Locations</span>
+			<span
+				class="headline text-3xl text-[color:var(--color-ink)] transition-colors group-hover:text-[color:var(--color-gold-bright)]"
+			>
+				{data.stats.locations}
+			</span>
 		</a>
-		<div class="rounded-lg border border-slate-200 bg-white p-4">
-			<div class="text-3xl font-semibold">{data.stats.categories}</div>
-			<div class="mt-1 text-xs text-slate-500">categories</div>
+		<div class="panel flex flex-col gap-1 px-4 py-4">
+			<span class="eyebrow">Categories</span>
+			<span class="headline text-3xl">{data.stats.categories}</span>
 		</div>
-		<div class="rounded-lg border border-slate-200 bg-white p-4">
-			<div class="text-3xl font-semibold">{data.stats.movements}</div>
-			<div class="mt-1 text-xs text-slate-500">total movements</div>
+		<div class="panel flex flex-col gap-1 px-4 py-4">
+			<span class="eyebrow">Movements</span>
+			<span class="headline text-3xl">{data.stats.movements}</span>
 		</div>
 	</div>
 
-	<div class="flex flex-wrap gap-2">
-		<a
-			href="/items/new"
-			class="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
-		>
-			+ Add item
-		</a>
-		<a
-			href="/items"
-			class="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-100"
-		>
-			Browse all items
-		</a>
+	<!-- Primary action area. -->
+	<div class="flex flex-wrap items-center gap-3">
+		<a href="/items/new" class="btn-primary">+ Add item</a>
+		<a href="/items" class="btn-ghost">Browse all items</a>
 	</div>
 </section>
