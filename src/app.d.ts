@@ -5,7 +5,11 @@ import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 declare global {
 	namespace App {
 		// interface Error {}
-		// interface Locals {}
+		interface Locals {
+			/** Populated by a server hook from the Cloudflare Access JWT.
+			 *  Undefined when developing locally without Access in front of us. */
+			userEmail?: string;
+		}
 		// interface PageData {}
 		// interface PageState {}
 		interface Platform {

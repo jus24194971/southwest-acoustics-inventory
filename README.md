@@ -37,9 +37,17 @@ npx wrangler r2 bucket create sw-acoustics-photos-preview
 npm run db:migrate:local
 
 # Run the dev server with Cloudflare bindings emulated.
-# (Plain `npm run dev` works for UI-only iteration but the D1 calls error out.)
+# Plain `vite dev` works for UI-only iteration, but D1 calls error out
+# because there's no `platform` object — use this instead:
+npm run dev:wrangler          # build + wrangler pages dev (bindings work)
+
+# Or if you've already built and just want to re-serve:
 npm run preview
 ```
+
+The dev server runs at http://localhost:8788 by default. The DYMO-bound
+label routes, the photo uploader (R2), and Squarespace sync all need
+the wrangler-pages-dev flavour to function.
 
 ## Project layout
 

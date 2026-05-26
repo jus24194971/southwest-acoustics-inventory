@@ -60,11 +60,18 @@ export const actions: Actions = {
 		const year = yearRaw ? parseInt(yearRaw, 10) : new Date().getFullYear();
 		if (!year || year < 2000 || year > 2100) errors.year_received = 'Year looks off.';
 
+		// Always include `values` in the fail() return so the form action's
+		// inferred type is consistent — keeps the .svelte type-narrowing happy.
+		const values = {
+			title,
+			description: description ?? '',
+			model,
+			condition,
+			year_received: year
+		};
+
 		if (Object.keys(errors).length > 0) {
-			return fail(400, {
-				errors,
-				values: { title, description, model, condition, year_received: year }
-			});
+			return fail(400, { errors, values });
 		}
 
 		const categoryId = parseInt(categoryIdRaw!, 10);
@@ -72,7 +79,10 @@ export const actions: Actions = {
 			.prepare(`SELECT code FROM category WHERE id = ?`)
 			.bind(categoryId)
 			.first<{ code: string }>();
-		if (!category) return fail(400, { errors: { category_id: 'Category not found.' } });
+		if (!category) {
+			const notFound: Record<string, string> = { category_id: 'Category not found.' };
+			return fail(400, { errors: notFound, values });
+		}
 
 		// Brand: either pick existing (brand_id), or supply a free-text 3-char code.
 		let brandId: number | null = null;
