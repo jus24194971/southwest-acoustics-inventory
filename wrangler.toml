@@ -22,7 +22,7 @@ pages_build_output_dir = ".svelte-kit/cloudflare"
 [[d1_databases]]
 binding = "DB"
 database_name = "inventory"
-database_id = "REPLACE_WITH_REAL_ID_AFTER_WRANGLER_D1_CREATE"
+database_id = "102aaa94-1dbf-4d4f-a505-02df0207d1e2"
 migrations_dir = "migrations"
 
 # R2 — photo + label PDF storage. No egress fees, which matters when
