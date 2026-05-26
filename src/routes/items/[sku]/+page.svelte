@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { PageData, ActionData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -68,6 +69,45 @@
 	let extraPhotos = $derived(data.photos.slice(1));
 	let activePhotoIndex = $state(0);
 	let activePhoto = $derived(data.photos[activePhotoIndex] ?? null);
+
+	// Five-slot attribute display. Each slot is rendered only if the item's
+	// category defines a label for it — `XXX` slots stay hidden in view
+	// mode but show up as inputs in edit mode (with the label).
+	let attrSlots = $derived(
+		[1, 2, 3, 4, 5].map((n) => {
+			const label = data.item[`cat_attr_${n}_label` as keyof typeof data.item] as
+				| string
+				| null;
+			const value = data.item[`attr_${n}` as keyof typeof data.item] as string;
+			const uniqueDesc = data.item[`attr_${n}_unique_desc` as keyof typeof data.item] as
+				| string
+				| null;
+			return { n, label, value, uniqueDesc };
+		})
+	);
+
+	// While editing, mirror form state locally so the UNQ-description
+	// textarea can appear conditionally per slot. `untrack` so Svelte 5
+	// doesn't warn that we're capturing data's initial value — that IS
+	// the intent; the form resets on navigation because the whole page
+	// remounts with new data.
+	let editAttrValues = $state<string[]>(
+		untrack(() => [
+			data.item.attr_1,
+			data.item.attr_2,
+			data.item.attr_3,
+			data.item.attr_4,
+			data.item.attr_5
+		])
+	);
+	let editTrackingMode = $state<'serialized' | 'stocked'>(
+		untrack(() => data.item.tracking_mode)
+	);
+	let editStockQty = $state(untrack(() => data.item.stock_qty));
+
+	function isUnq(value: string): boolean {
+		return value.trim().toUpperCase() === 'UNQ';
+	}
 </script>
 
 <section class="space-y-6">
@@ -94,10 +134,29 @@
 			{#if data.item.brand_code}
 				<span class="pill">{data.item.brand_code}</span>
 			{/if}
+			{#if data.item.tracking_mode === 'stocked'}
+				<span class="pill pill-warn">
+					Stocked · {data.item.stock_qty} on hand
+				</span>
+			{/if}
 			<span class="text-xs text-[color:var(--color-ink-3)]">
 				Received {data.item.year_received}
 			</span>
 		</div>
+
+		{#if data.parent}
+			<p class="text-xs text-[color:var(--color-ink-3)]">
+				Variant of
+				<a
+					href="/items/{encodeURIComponent(data.parent.sku)}"
+					class="font-mono text-[color:var(--color-gold-bright)] hover:underline"
+				>
+					{data.parent.sku}
+				</a>
+				<span class="text-[color:var(--color-ink-4)]">·</span>
+				{data.parent.title}
+			</p>
+		{/if}
 	</header>
 
 	{#if form?.actionError}
@@ -322,6 +381,63 @@
 		</aside>
 	</div>
 
+	<!-- ============= Attributes (view) ============= -->
+	{#if attrSlots.some((s) => s.label != null)}
+		<section class="panel space-y-3 px-6 py-5">
+			<p class="eyebrow">Attributes</p>
+			<dl class="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+				{#each attrSlots as slot (slot.n)}
+					{#if slot.label}
+						<div class="space-y-0.5">
+							<dt class="eyebrow text-[10px]">{slot.label}</dt>
+							<dd class="flex items-baseline gap-2">
+								<span
+									class="font-mono text-sm {slot.value === 'XXX'
+										? 'text-[color:var(--color-ink-4)] italic'
+										: slot.value === 'UNQ'
+											? 'text-[color:var(--color-gold-bright)]'
+											: 'text-[color:var(--color-ink)]'}"
+								>
+									{slot.value === 'XXX' ? '—' : slot.value}
+								</span>
+							</dd>
+							{#if slot.value === 'UNQ' && slot.uniqueDesc}
+								<p class="text-xs italic text-[color:var(--color-ink-2)]">
+									{slot.uniqueDesc}
+								</p>
+							{/if}
+						</div>
+					{/if}
+				{/each}
+			</dl>
+		</section>
+	{/if}
+
+	<!-- ============= Variants (if this item has children) ============= -->
+	{#if data.variants.length > 0}
+		<section class="panel space-y-3 px-6 py-5">
+			<p class="eyebrow">{data.variants.length} variant{data.variants.length === 1 ? '' : 's'}</p>
+			<ul class="space-y-1">
+				{#each data.variants as v (v.id)}
+					<li class="flex items-baseline gap-3 text-sm">
+						<a
+							href="/items/{encodeURIComponent(v.sku)}"
+							class="font-mono text-xs text-[color:var(--color-gold)] hover:text-[color:var(--color-gold-bright)]"
+						>
+							{v.sku}
+						</a>
+						<span class="flex-1 truncate text-[color:var(--color-ink-2)]">{v.title}</span>
+						{#if v.stock_qty !== 1}
+							<span class="font-mono text-xs text-[color:var(--color-ink-3)]">
+								qty {v.stock_qty}
+							</span>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
+
 	<!-- ============= Description + edit ============= -->
 	<section class="panel space-y-3 px-6 py-5">
 		<div class="flex items-center justify-between">
@@ -392,6 +508,81 @@
 						</div>
 					</div>
 				</div>
+
+				<!-- Tracking -->
+				<fieldset class="grid gap-3 rounded border border-[color:var(--color-line-dim)] p-4 sm:grid-cols-2">
+					<legend class="eyebrow px-2">Tracking</legend>
+					<div class="space-y-1.5">
+						<label for="tracking_mode" class="eyebrow block">Mode</label>
+						<select
+							id="tracking_mode"
+							name="tracking_mode"
+							bind:value={editTrackingMode}
+							class="field"
+						>
+							<option value="serialized">Serialized (one object)</option>
+							<option value="stocked">Stocked (count by qty)</option>
+						</select>
+					</div>
+					{#if editTrackingMode === 'stocked'}
+						<div class="space-y-1.5">
+							<label for="stock_qty" class="eyebrow block">On-hand quantity</label>
+							<input
+								id="stock_qty"
+								name="stock_qty"
+								type="number"
+								min="0"
+								bind:value={editStockQty}
+								class="field"
+							/>
+							{#if form?.editErrors?.stock_qty}
+								<p class="text-xs text-[color:var(--color-rust-bright)]">
+									{form.editErrors.stock_qty}
+								</p>
+							{/if}
+						</div>
+					{:else}
+						<input type="hidden" name="stock_qty" value="1" />
+					{/if}
+				</fieldset>
+
+				<!-- Attributes -->
+				{#if attrSlots.some((s) => s.label != null)}
+					<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
+						<legend class="eyebrow px-2">Attributes</legend>
+						<p class="text-[11px] text-[color:var(--color-ink-3)]">
+							Editing attributes updates the columns but leaves the SKU unchanged. If you've
+							already printed labels, they'll still read the original values.
+						</p>
+						<div class="grid gap-3 sm:grid-cols-2">
+							{#each attrSlots as slot, i (slot.n)}
+								{#if slot.label}
+									<div class="space-y-1.5">
+										<label for="attr_{slot.n}" class="eyebrow block">{slot.label}</label>
+										<input
+											id="attr_{slot.n}"
+											name="attr_{slot.n}"
+											type="text"
+											maxlength="3"
+											placeholder="XXX"
+											bind:value={editAttrValues[i]}
+											class="field font-mono uppercase"
+										/>
+										{#if isUnq(editAttrValues[i])}
+											<textarea
+												name="attr_{slot.n}_unique_desc"
+												rows="2"
+												placeholder="Describe this one-of-a-kind {slot.label.toLowerCase()}…"
+												class="field text-sm"
+												>{slot.uniqueDesc ?? ''}</textarea
+											>
+										{/if}
+									</div>
+								{/if}
+							{/each}
+						</div>
+					</fieldset>
+				{/if}
 
 				<div class="space-y-1.5">
 					<label for="description" class="eyebrow block">Description (plain text)</label>

@@ -2,7 +2,7 @@ import type { Actions, PageServerLoad } from './$types';
 import type { D1Database } from '@cloudflare/workers-types';
 import { error, fail, redirect } from '@sveltejs/kit';
 import { getDB } from '$lib/server/db';
-import { isCondition } from '$lib/server/sku';
+import { isCondition, normaliseAttr, ATTR_UNIQUE } from '$lib/server/sku';
 
 /**
  * Item detail page — the screen Dad spends most of his time on.
@@ -32,6 +32,11 @@ interface ItemRow {
 	category_id: number;
 	cat_code: string;
 	cat_name: string;
+	cat_attr_1_label: string | null;
+	cat_attr_2_label: string | null;
+	cat_attr_3_label: string | null;
+	cat_attr_4_label: string | null;
+	cat_attr_5_label: string | null;
 	brand_id: number | null;
 	brand_code: string | null;
 	brand_name: string | null;
@@ -44,6 +49,20 @@ interface ItemRow {
 	bin_code: string | null;
 	loc_code: string | null;
 	loc_name: string | null;
+	tracking_mode: 'serialized' | 'stocked';
+	stock_qty: number;
+	attr_1: string;
+	attr_2: string;
+	attr_3: string;
+	attr_4: string;
+	attr_5: string;
+	attr_1_unique_desc: string | null;
+	attr_2_unique_desc: string | null;
+	attr_3_unique_desc: string | null;
+	attr_4_unique_desc: string | null;
+	attr_5_unique_desc: string | null;
+	attributes_json: string | null;
+	parent_item_id: number | null;
 	retired_at: string | null;
 	retired_reason: string | null;
 	squarespace_product_id: string | null;
@@ -84,10 +103,15 @@ async function loadItemBySku(db: D1Database, sku: string) {
 		.prepare(
 			`SELECT
 				i.*,
-				c.code  AS cat_code,
-				c.name  AS cat_name,
-				br.code AS brand_code,
-				br.name AS brand_name,
+				c.code         AS cat_code,
+				c.name         AS cat_name,
+				c.attr_1_label AS cat_attr_1_label,
+				c.attr_2_label AS cat_attr_2_label,
+				c.attr_3_label AS cat_attr_3_label,
+				c.attr_4_label AS cat_attr_4_label,
+				c.attr_5_label AS cat_attr_5_label,
+				br.code  AS brand_code,
+				br.name  AS brand_name,
 				bin.code AS bin_code,
 				loc.code AS loc_code,
 				loc.name AS loc_name
@@ -110,8 +134,15 @@ export const load: PageServerLoad = async (event) => {
 	const item = await loadItemBySku(db, sku);
 	if (!item) throw error(404, `No item with SKU ${sku}`);
 
-	// Run the four read queries in one D1 batch round-trip.
-	const [photos, movements, bins, categories] = await db.batch([
+	// Six read queries in one D1 batch round-trip:
+	//   - photos
+	//   - movements
+	//   - bins (for transfer dropdown)
+	//   - categories (with attr labels, for the change-category dropdown
+	//                 and the edit form's dynamic attribute inputs)
+	//   - parent item (if this item is a variant under one)
+	//   - child variants (items whose parent_item_id = this.id)
+	const [photos, movements, bins, categories, parent, variants] = await db.batch([
 		db
 			.prepare(
 				`SELECT id, r2_key, source_url, position, alt_text, width, height, bytes, content_type
@@ -129,7 +160,8 @@ export const load: PageServerLoad = async (event) => {
 					fl.code  AS from_loc,
 					tb.code  AS to_bin,
 					tl.code  AS to_loc,
-					m.note, m.reference, m.actor, m.created_at
+					m.note, m.reference, m.actor, m.created_at,
+					m.quantity
 				 FROM movement m
 				 LEFT JOIN bin fb       ON fb.id = m.from_bin_id
 				 LEFT JOIN location fl  ON fl.id = fb.location_id
@@ -148,7 +180,25 @@ export const load: PageServerLoad = async (event) => {
 			 ORDER BY loc.code, bin.code`
 		),
 
-		db.prepare(`SELECT id, code, name FROM category ORDER BY name`)
+		db.prepare(
+			`SELECT id, code, name,
+			        attr_1_label, attr_2_label, attr_3_label, attr_4_label, attr_5_label
+			 FROM category
+			 ORDER BY name`
+		),
+
+		db
+			.prepare(`SELECT id, sku, title FROM item WHERE id = ? AND deleted_at IS NULL`)
+			.bind(item.parent_item_id ?? -1),
+
+		db
+			.prepare(
+				`SELECT id, sku, title, attr_1, attr_2, attr_3, attr_4, attr_5, stock_qty
+				 FROM item
+				 WHERE parent_item_id = ? AND deleted_at IS NULL
+				 ORDER BY sku`
+			)
+			.bind(item.id)
 	]);
 
 	return {
@@ -161,7 +211,28 @@ export const load: PageServerLoad = async (event) => {
 			loc_code: string;
 			loc_name: string;
 		}>,
-		categories: categories.results as Array<{ id: number; code: string; name: string }>
+		categories: categories.results as Array<{
+			id: number;
+			code: string;
+			name: string;
+			attr_1_label: string | null;
+			attr_2_label: string | null;
+			attr_3_label: string | null;
+			attr_4_label: string | null;
+			attr_5_label: string | null;
+		}>,
+		parent: (parent.results[0] ?? null) as { id: number; sku: string; title: string } | null,
+		variants: variants.results as Array<{
+			id: number;
+			sku: string;
+			title: string;
+			attr_1: string;
+			attr_2: string;
+			attr_3: string;
+			attr_4: string;
+			attr_5: string;
+			stock_qty: number;
+		}>
 	};
 };
 
@@ -182,10 +253,32 @@ export const actions: Actions = {
 		const condition = (form.get('condition') ?? '').toString();
 		const costStr = form.get('cost')?.toString().trim();
 		const priceStr = form.get('price')?.toString().trim();
+		const trackingMode = (form.get('tracking_mode') ?? item.tracking_mode).toString();
+		const stockQtyRaw = form.get('stock_qty')?.toString();
+
+		// Attribute slots — read positionally. Empty fields normalise to
+		// 'XXX' (no value). The matching _unique_desc only persists when
+		// the slot itself is UNQ.
+		const attrRaw = [1, 2, 3, 4, 5].map((n) => ({
+			value: normaliseAttr((form.get(`attr_${n}`) ?? '').toString()),
+			uniqueDesc: (form.get(`attr_${n}_unique_desc`) ?? '').toString().trim() || null
+		}));
 
 		const errors: Record<string, string> = {};
 		if (!title) errors.title = 'Title is required.';
 		if (!isCondition(condition)) errors.condition = 'Pick a valid condition.';
+		if (trackingMode !== 'serialized' && trackingMode !== 'stocked') {
+			errors.tracking_mode = 'Tracking mode must be serialized or stocked.';
+		}
+		const stockQty =
+			trackingMode === 'serialized'
+				? 1
+				: stockQtyRaw
+					? parseInt(stockQtyRaw, 10)
+					: item.stock_qty;
+		if (trackingMode === 'stocked' && (!Number.isInteger(stockQty) || stockQty < 0)) {
+			errors.stock_qty = 'Stock quantity must be a non-negative integer.';
+		}
 		if (Object.keys(errors).length > 0) {
 			return fail(400, { editErrors: errors });
 		}
@@ -193,11 +286,19 @@ export const actions: Actions = {
 		const costCents = costStr ? Math.round(parseFloat(costStr) * 100) : null;
 		const priceCents = priceStr ? Math.round(parseFloat(priceStr) * 100) : null;
 
+		// Note: the SKU itself stays frozen — modifying the attr columns
+		// without regenerating the SKU is the intended behaviour. The
+		// labels Dad has already printed shouldn't suddenly disagree with
+		// the database. The detail page surfaces any drift inline.
 		await db
 			.prepare(
 				`UPDATE item
 				 SET title = ?, description = ?, description_html = ?,
 				     condition = ?, cost_cents = ?, price_cents = ?,
+				     tracking_mode = ?, stock_qty = ?,
+				     attr_1 = ?, attr_2 = ?, attr_3 = ?, attr_4 = ?, attr_5 = ?,
+				     attr_1_unique_desc = ?, attr_2_unique_desc = ?,
+				     attr_3_unique_desc = ?, attr_4_unique_desc = ?, attr_5_unique_desc = ?,
 				     updated_at = datetime('now')
 				 WHERE id = ?`
 			)
@@ -208,6 +309,18 @@ export const actions: Actions = {
 				condition,
 				costCents,
 				priceCents,
+				trackingMode,
+				stockQty,
+				attrRaw[0].value,
+				attrRaw[1].value,
+				attrRaw[2].value,
+				attrRaw[3].value,
+				attrRaw[4].value,
+				attrRaw[0].value === ATTR_UNIQUE ? attrRaw[0].uniqueDesc : null,
+				attrRaw[1].value === ATTR_UNIQUE ? attrRaw[1].uniqueDesc : null,
+				attrRaw[2].value === ATTR_UNIQUE ? attrRaw[2].uniqueDesc : null,
+				attrRaw[3].value === ATTR_UNIQUE ? attrRaw[3].uniqueDesc : null,
+				attrRaw[4].value === ATTR_UNIQUE ? attrRaw[4].uniqueDesc : null,
 				item.id
 			)
 			.run();
