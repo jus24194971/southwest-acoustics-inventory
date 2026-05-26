@@ -1,0 +1,23 @@
+@import 'tailwindcss';
+
+/* Brand tokens — keep these in sync with the parent Listing Studio palette
+   so anything that ever ends up shared (labels, exports) feels like one shop. */
+@theme {
+	--color-brand-cream: #fdf8ee;
+	--color-brand-gold: #c39d3a;
+	--color-brand-ink: #1f2128;
+	--font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Make tap targets comfortable on the phone — Dad is on the shop floor,
+   often gloved or with dusty hands. 44px minimum is the iOS HIG target. */
+button,
+[role='button'],
+input[type='submit'] {
+	min-height: 44px;
+}
+input,
+select,
+textarea {
+	min-height: 44px;
+}

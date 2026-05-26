@@ -1,0 +1,38 @@
+# Cloudflare Pages configuration.
+#
+# This file ships with placeholder IDs for D1 + R2 — the *names* of the
+# bindings (DB, PHOTOS) are what the app code depends on, so those should
+# never change without updating src/app.d.ts and every server-side load.
+#
+# The database_id / bucket_name values are created out-of-band with:
+#   wrangler d1 create inventory
+#   wrangler r2 bucket create sw-acoustics-photos
+# and then pasted in below. The local dev server doesn't need real IDs —
+# wrangler stores local D1 data under .wrangler/state/ and uses an
+# in-memory R2 emulator until you point at the real bucket.
+
+name = "sw-acoustics-inventory"
+compatibility_date = "2025-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+pages_build_output_dir = ".svelte-kit/cloudflare"
+
+# D1 — the inventory database.
+# After `wrangler d1 create inventory`, paste the printed database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "inventory"
+database_id = "REPLACE_WITH_REAL_ID_AFTER_WRANGLER_D1_CREATE"
+migrations_dir = "migrations"
+
+# R2 — photo + label PDF storage. No egress fees, which matters when
+# Squarespace fetches images for the product feed.
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "sw-acoustics-photos"
+preview_bucket_name = "sw-acoustics-photos-preview"
+
+# Vars — non-secret config. Secrets (Squarespace API key, etc.)
+# go through `wrangler pages secret put` instead, never in this file.
+[vars]
+ENVIRONMENT = "development"

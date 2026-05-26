@@ -1,0 +1,32 @@
+{
+	"name": "southwest-acoustics-inventory",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build",
+		"preview": "wrangler pages dev",
+		"prepare": "svelte-kit sync || echo ''",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"deploy": "npm run build && wrangler pages deploy",
+		"db:migrate:local": "wrangler d1 migrations apply inventory --local",
+		"db:migrate:remote": "wrangler d1 migrations apply inventory --remote",
+		"db:console:local": "wrangler d1 execute inventory --local --command",
+		"db:console:remote": "wrangler d1 execute inventory --remote --command"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20260526.1",
+		"@sveltejs/adapter-cloudflare": "^7.2.8",
+		"@sveltejs/kit": "^2.57.0",
+		"@sveltejs/vite-plugin-svelte": "^7.0.0",
+		"@tailwindcss/vite": "^4.3.0",
+		"svelte": "^5.55.2",
+		"svelte-check": "^4.4.6",
+		"tailwindcss": "^4.3.0",
+		"typescript": "^6.0.2",
+		"vite": "^8.0.7",
+		"wrangler": "^4.95.0"
+	}
+}
