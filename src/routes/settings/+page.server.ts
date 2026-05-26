@@ -1,7 +1,7 @@
 import type { Actions, PageServerLoad } from './$types';
 import { fail, redirect } from '@sveltejs/kit';
 import { getDB } from '$lib/server/db';
-import { loadPreferences, setPreference } from '$lib/server/preferences';
+import { loadPreferences } from '$lib/server/preferences';
 import { listProducts, SquarespaceError } from '$lib/server/squarespace';
 
 /**
@@ -139,6 +139,3 @@ export const actions: Actions = {
 	}
 };
 
-// Helper unused right now but kept here so future "set arbitrary
-// preference" actions can hang off the same pattern.
-export { setPreference };
