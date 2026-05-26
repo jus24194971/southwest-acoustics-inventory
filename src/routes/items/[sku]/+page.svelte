@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import type { PageData, ActionData } from './$types';
+	import AttributeValueSelect from '$lib/components/AttributeValueSelect.svelte';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
@@ -71,18 +72,31 @@
 	let activePhoto = $derived(data.photos[activePhotoIndex] ?? null);
 
 	// Five-slot attribute display. Each slot is rendered only if the item's
-	// category defines a label for it — `XXX` slots stay hidden in view
-	// mode but show up as inputs in edit mode (with the label).
+	// category defines a label for it. The contextKey tells the dropdown
+	// component which subset of attribute_values to show.
 	let attrSlots = $derived(
 		[1, 2, 3, 4, 5].map((n) => {
 			const label = data.item[`cat_attr_${n}_label` as keyof typeof data.item] as
 				| string
 				| null;
+			const contextKey = data.item[
+				`cat_attr_${n}_context_key` as keyof typeof data.item
+			] as string | null;
 			const value = data.item[`attr_${n}` as keyof typeof data.item] as string;
 			const uniqueDesc = data.item[`attr_${n}_unique_desc` as keyof typeof data.item] as
 				| string
 				| null;
-			return { n, label, value, uniqueDesc };
+			const values = contextKey
+				? data.attrValues
+						.filter((v) => v.context_key === contextKey)
+						.map((v) => ({ id: v.id, code: v.code, label: v.label }))
+				: [];
+			// Look up the friendly label for the current code (for display mode).
+			const valueLabel =
+				value !== 'XXX' && value !== 'UNQ'
+					? values.find((v) => v.code === value)?.label
+					: null;
+			return { n, label, contextKey, value, valueLabel, uniqueDesc, values };
 		})
 	);
 
@@ -390,16 +404,21 @@
 					{#if slot.label}
 						<div class="space-y-0.5">
 							<dt class="eyebrow text-[10px]">{slot.label}</dt>
-							<dd class="flex items-baseline gap-2">
-								<span
-									class="font-mono text-sm {slot.value === 'XXX'
-										? 'text-[color:var(--color-ink-4)] italic'
-										: slot.value === 'UNQ'
-											? 'text-[color:var(--color-gold-bright)]'
-											: 'text-[color:var(--color-ink)]'}"
-								>
-									{slot.value === 'XXX' ? '—' : slot.value}
-								</span>
+							<dd>
+								{#if slot.value === 'XXX'}
+									<span class="font-mono text-sm italic text-[color:var(--color-ink-4)]">—</span>
+								{:else if slot.value === 'UNQ'}
+									<span class="font-mono text-sm text-[color:var(--color-gold-bright)]">
+										UNQ
+									</span>
+								{:else if slot.valueLabel}
+									<span class="text-sm text-[color:var(--color-ink)]">{slot.valueLabel}</span>
+									<span class="ml-1 font-mono text-xs text-[color:var(--color-gold-dim)]">
+										({slot.value})
+									</span>
+								{:else}
+									<span class="font-mono text-sm text-[color:var(--color-ink)]">{slot.value}</span>
+								{/if}
 							</dd>
 							{#if slot.value === 'UNQ' && slot.uniqueDesc}
 								<p class="text-xs italic text-[color:var(--color-ink-2)]">
@@ -559,14 +578,12 @@
 								{#if slot.label}
 									<div class="space-y-1.5">
 										<label for="attr_{slot.n}" class="eyebrow block">{slot.label}</label>
-										<input
-											id="attr_{slot.n}"
+										<AttributeValueSelect
+											contextKey={slot.contextKey}
 											name="attr_{slot.n}"
-											type="text"
-											maxlength="3"
-											placeholder="XXX"
 											bind:value={editAttrValues[i]}
-											class="field font-mono uppercase"
+											initialValues={slot.values}
+											placeholder="— no value —"
 										/>
 										{#if isUnq(editAttrValues[i])}
 											<textarea

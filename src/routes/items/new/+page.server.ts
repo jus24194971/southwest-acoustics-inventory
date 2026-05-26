@@ -25,15 +25,30 @@ interface CategoryRow {
 	attr_3_label: string | null;
 	attr_4_label: string | null;
 	attr_5_label: string | null;
+	attr_1_context_key: string | null;
+	attr_2_context_key: string | null;
+	attr_3_context_key: string | null;
+	attr_4_context_key: string | null;
+	attr_5_context_key: string | null;
+}
+
+interface AttributeValueRow {
+	id: number;
+	context_key: string;
+	code: string;
+	label: string;
+	sort_order: number;
 }
 
 export const load: PageServerLoad = async (event) => {
 	const db = getDB(event);
 
-	const [categories, brands, bins] = await db.batch([
+	const [categories, brands, bins, attrValues] = await db.batch([
 		db.prepare(
 			`SELECT id, code, name,
-			        attr_1_label, attr_2_label, attr_3_label, attr_4_label, attr_5_label
+			        attr_1_label, attr_2_label, attr_3_label, attr_4_label, attr_5_label,
+			        attr_1_context_key, attr_2_context_key, attr_3_context_key,
+			        attr_4_context_key, attr_5_context_key
 			 FROM category
 			 ORDER BY name`
 		),
@@ -63,13 +78,21 @@ export const load: PageServerLoad = async (event) => {
 			SELECT id, code AS bin_code, depth, path
 			FROM bin_tree
 			ORDER BY path`
+		),
+
+		db.prepare(
+			`SELECT id, context_key, code, label, sort_order
+			 FROM attribute_value
+			 WHERE is_active = 1
+			 ORDER BY context_key, sort_order, label`
 		)
 	]);
 
 	return {
 		categories: categories.results as CategoryRow[],
 		brands: brands.results as Array<{ id: number; code: string; name: string }>,
-		bins: bins.results as Array<{ id: number; bin_code: string; depth: number; path: string }>
+		bins: bins.results as Array<{ id: number; bin_code: string; depth: number; path: string }>,
+		attrValues: attrValues.results as AttributeValueRow[]
 	};
 };
 

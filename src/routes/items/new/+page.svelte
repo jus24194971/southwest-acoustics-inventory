@@ -1,33 +1,42 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types';
+	import AttributeValueSelect from '$lib/components/AttributeValueSelect.svelte';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
 	const currentYear = new Date().getFullYear();
 
-	// Track form state reactively so attribute inputs swap in/out when the
-	// category changes, and so the UNQ description textarea appears
-	// inline only when the matching slot value is "UNQ".
+	// Form state — attribute inputs react to category changes so only
+	// the slots that mean something for the current category show up.
 	let selectedCategoryId = $state<number | null>(null);
 	let attrValues = $state<string[]>(['', '', '', '', '']);
 	let trackingMode = $state<'serialized' | 'stocked'>('serialized');
 	let stockQty = $state(1);
 
-	// Derive the active category's attribute labels (or nulls). Each
-	// non-null label means "render this attribute slot's input."
 	let activeCategory = $derived(
 		data.categories.find((c) => c.id === selectedCategoryId) ?? null
 	);
-	let attrLabels = $derived(
-		activeCategory
-			? [
-					activeCategory.attr_1_label,
-					activeCategory.attr_2_label,
-					activeCategory.attr_3_label,
-					activeCategory.attr_4_label,
-					activeCategory.attr_5_label
-				]
-			: [null, null, null, null, null]
+
+	// Derive per-slot {label, contextKey, valuesForContext} from the
+	// active category. Each slot's dropdown gets the subset of
+	// attribute_values that match its context_key.
+	let attrSlots = $derived(
+		[1, 2, 3, 4, 5].map((n) => {
+			const label = activeCategory
+				? (activeCategory[`attr_${n}_label` as keyof typeof activeCategory] as string | null)
+				: null;
+			const contextKey = activeCategory
+				? (activeCategory[`attr_${n}_context_key` as keyof typeof activeCategory] as
+						| string
+						| null)
+				: null;
+			const values = contextKey
+				? data.attrValues
+						.filter((v) => v.context_key === contextKey)
+						.map((v) => ({ id: v.id, code: v.code, label: v.label }))
+				: [];
+			return { n, label, contextKey, values };
+		})
 	);
 
 	function isUnq(value: string): boolean {
@@ -144,34 +153,32 @@
 		</div>
 
 		<!-- ============= Per-category attributes ============= -->
-		{#if attrLabels.some((l) => l != null)}
+		{#if attrSlots.some((s) => s.label != null)}
 			<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
 				<legend class="eyebrow px-2">Attributes</legend>
 				<p class="text-[11px] text-[color:var(--color-ink-3)]">
-					3-character codes (e.g. <span class="font-mono">BLK</span> for black,
-					<span class="font-mono">SLV</span> for silver). Type
-					<span class="font-mono">UNQ</span> for one-of-a-kind and describe it in the box that
-					appears.
+					Each dropdown shows the friendly name with the 3-letter SKU code in parentheses. Pick
+					<span class="font-mono">+ Add new value…</span> at the bottom to add a code we
+					haven't catalogued yet. Pick <span class="font-mono">UNQ</span> for a one-of-a-kind and
+					describe it in the box that appears.
 				</p>
 				<div class="grid gap-3 sm:grid-cols-2">
-					{#each attrLabels as label, i (i)}
-						{#if label}
+					{#each attrSlots as slot, i (slot.n)}
+						{#if slot.label}
 							<div class="space-y-1.5">
-								<label for="attr_{i + 1}" class="eyebrow block">{label}</label>
-								<input
-									id="attr_{i + 1}"
-									name="attr_{i + 1}"
-									type="text"
-									maxlength="3"
-									placeholder="XXX"
+								<label for="attr_{slot.n}" class="eyebrow block">{slot.label}</label>
+								<AttributeValueSelect
+									contextKey={slot.contextKey}
+									name="attr_{slot.n}"
 									bind:value={attrValues[i]}
-									class="field font-mono uppercase"
+									initialValues={slot.values}
+									placeholder="— no value —"
 								/>
 								{#if isUnq(attrValues[i])}
 									<textarea
-										name="attr_{i + 1}_unique_desc"
+										name="attr_{slot.n}_unique_desc"
 										rows="2"
-										placeholder="Describe this one-of-a-kind {label.toLowerCase()}…"
+										placeholder="Describe this one-of-a-kind {slot.label.toLowerCase()}…"
 										class="field text-sm"
 									></textarea>
 								{/if}

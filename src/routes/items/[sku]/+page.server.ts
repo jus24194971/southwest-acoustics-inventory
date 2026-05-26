@@ -37,6 +37,11 @@ interface ItemRow {
 	cat_attr_3_label: string | null;
 	cat_attr_4_label: string | null;
 	cat_attr_5_label: string | null;
+	cat_attr_1_context_key: string | null;
+	cat_attr_2_context_key: string | null;
+	cat_attr_3_context_key: string | null;
+	cat_attr_4_context_key: string | null;
+	cat_attr_5_context_key: string | null;
 	brand_id: number | null;
 	brand_code: string | null;
 	brand_name: string | null;
@@ -110,6 +115,11 @@ async function loadItemBySku(db: D1Database, sku: string) {
 				c.attr_3_label AS cat_attr_3_label,
 				c.attr_4_label AS cat_attr_4_label,
 				c.attr_5_label AS cat_attr_5_label,
+				c.attr_1_context_key AS cat_attr_1_context_key,
+				c.attr_2_context_key AS cat_attr_2_context_key,
+				c.attr_3_context_key AS cat_attr_3_context_key,
+				c.attr_4_context_key AS cat_attr_4_context_key,
+				c.attr_5_context_key AS cat_attr_5_context_key,
 				br.code  AS brand_code,
 				br.name  AS brand_name,
 				bin.code AS bin_code,
@@ -200,7 +210,9 @@ export const load: PageServerLoad = async (event) => {
 
 		db.prepare(
 			`SELECT id, code, name,
-			        attr_1_label, attr_2_label, attr_3_label, attr_4_label, attr_5_label
+			        attr_1_label, attr_2_label, attr_3_label, attr_4_label, attr_5_label,
+			        attr_1_context_key, attr_2_context_key, attr_3_context_key,
+			        attr_4_context_key, attr_5_context_key
 			 FROM category
 			 ORDER BY name`
 		),
@@ -219,8 +231,26 @@ export const load: PageServerLoad = async (event) => {
 			.bind(item.id)
 	]);
 
+	// Attribute values for all contexts — used by the dropdown widgets
+	// in the edit form. Small dataset; one query for the whole catalogue.
+	const { results: attrValues } = await db
+		.prepare(
+			`SELECT id, context_key, code, label, sort_order
+			 FROM attribute_value
+			 WHERE is_active = 1
+			 ORDER BY context_key, sort_order, label`
+		)
+		.all<{
+			id: number;
+			context_key: string;
+			code: string;
+			label: string;
+			sort_order: number;
+		}>();
+
 	return {
 		item,
+		attrValues,
 		photos: photos.results as PhotoRow[],
 		movements: movements.results as MovementRow[],
 		bins: bins.results as Array<{
