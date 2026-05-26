@@ -244,6 +244,42 @@ textarea {
 }
 
 /* =============================================================
+   Accessibility — font scaling + high contrast.
+   These mirror the Listing Studio approach: a CSS zoom on a wrapper
+   for font scale, a class on a wrapper for high contrast that
+   overrides the brand tokens with sharper, brighter values.
+   ============================================================= */
+
+.font-scale-large {
+	zoom: 1.2;
+}
+.font-scale-xlarge {
+	zoom: 1.4;
+}
+
+/* High-contrast palette — same approach as LS's body.high-contrast
+   block, with sharper ink and brighter accents. */
+.high-contrast {
+	--color-ink: #ffffff;
+	--color-ink-2: #f4e4b6;
+	--color-ink-3: #bfa67b;
+	--color-ink-4: #806c47;
+
+	--color-shell: #0d0b08;
+	--color-panel: #1a1610;
+	--color-panel-2: #221c14;
+	--color-input: #050402;
+
+	--color-gold-bright: #ffd580;
+	--color-gold: #dfb871;
+	--color-moss-bright: #b5e060;
+	--color-rust-bright: #ff7050;
+
+	--color-line: #6b5a40;
+	--color-line-bright: #8b7550;
+}
+
+/* =============================================================
    Scrollbars — thin, gold-on-dark to match the chrome.
    ============================================================= */
 
