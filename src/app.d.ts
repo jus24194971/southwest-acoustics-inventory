@@ -18,6 +18,9 @@ declare global {
 				DB: D1Database;
 				/** R2 bucket for photos + label PDFs. */
 				PHOTOS: R2Bucket;
+				/** Squarespace Commerce API key. Set via `wrangler pages secret put
+				 *  SQUARESPACE_API_KEY` for prod, and `.dev.vars` for local. */
+				SQUARESPACE_API_KEY?: string;
 			};
 			context: {
 				waitUntil(promise: Promise<unknown>): void;
