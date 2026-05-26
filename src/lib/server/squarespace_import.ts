@@ -35,6 +35,25 @@ import { generateSku, normaliseModelCode } from './sku';
  *  after import via the (still-to-be-built) item detail page. */
 const DEFAULT_CATEGORY_CODE = 'MS';
 
+/**
+ * Cloudflare Workers / Pages Functions free tier allows ~50 outbound
+ * fetch() subrequests per invocation. Budget conservatively so the
+ * Squarespace list paginations + our photo downloads stay under it.
+ * R2 puts and D1 calls go through bindings — they are NOT subrequests.
+ */
+const PHOTO_SUBREQUEST_BUDGET = 40;
+
+/**
+ * Squarespace returns image URLs with the literal segment "/null/" for
+ * products where an image was orphaned on their end. These will always
+ * 404 — detect and skip without spending a subrequest on them.
+ */
+function isUsablePhotoUrl(url: string | undefined): url is string {
+	if (!url) return false;
+	if (url.includes('/null/')) return false;
+	return true;
+}
+
 export interface ImportError {
 	context: string;
 	error: string;
@@ -59,7 +78,7 @@ export async function importBatch(
 	db: D1Database,
 	r2: R2Bucket,
 	apiKey: string,
-	maxToProcess: number = 10
+	maxToCreate: number = 5
 ): Promise<BatchResult> {
 	const result: BatchResult = {
 		processedThisCall: 0,
@@ -81,23 +100,28 @@ export async function importBatch(
 		);
 	}
 
-	// Walk SS pages until we find `maxToProcess` un-imported variants OR
+	// Walk SS pages until we find `maxToCreate` un-imported variants OR
 	// exhaust the catalog. Cursor isn't persisted between calls — we
 	// rebuild the "already imported" set from D1 each call. Wasteful for
 	// huge catalogs but trivially correct.
+	//
+	// IMPORTANT: only *creates* count toward `maxToCreate`. Updates do
+	// no photo fetches, cost nothing in subrequest budget, and would
+	// otherwise stall the loop on re-runs (filling the batch with the
+	// same N already-imported variants over and over).
 	let cursor: string | undefined;
 	let exhausted = false;
+	let photoFetchesUsed = 0;
 
-	while (result.processedThisCall < maxToProcess && !exhausted) {
+	while (result.itemsCreated < maxToCreate && !exhausted) {
 		const page = await listProducts(apiKey, { cursor });
 
 		for (const product of page.products) {
-			if (result.processedThisCall >= maxToProcess) break;
+			if (result.itemsCreated >= maxToCreate) break;
 			for (const variant of product.variants) {
-				if (result.processedThisCall >= maxToProcess) break;
+				if (result.itemsCreated >= maxToCreate) break;
 
-				// Skip if we already imported this variant. Cheap lookup
-				// since we indexed (product_id, variant_id).
+				// Cheap lookup — indexed on (product_id, variant_id).
 				const existing = await db
 					.prepare(
 						`SELECT id FROM item WHERE squarespace_product_id = ? AND squarespace_variant_id = ?`
@@ -109,8 +133,24 @@ export async function importBatch(
 					if (existing) {
 						await updateExisting(db, existing.id, product, variant);
 						result.itemsUpdated++;
+						// Do NOT increment itemsCreated — keep looking for
+						// real work. Don't increment processedThisCall —
+						// it's only used for the UI's "did anything happen
+						// this call" check.
 					} else {
-						const photoCount = await createNew(
+						// Pre-flight subrequest budget check. Each usable
+						// photo URL is one fetch. If creating this item
+						// would push us past the budget, stop here — the
+						// next invocation gets a fresh 50-fetch allowance.
+						const usablePhotos = (product.images ?? []).filter((img) =>
+							isUsablePhotoUrl(img.url)
+						).length;
+						if (photoFetchesUsed + usablePhotos > PHOTO_SUBREQUEST_BUDGET) {
+							exhausted = true;
+							break;
+						}
+
+						const fetched = await createNew(
 							db,
 							r2,
 							product,
@@ -118,18 +158,16 @@ export async function importBatch(
 							defaultCat.id,
 							result.errors
 						);
+						photoFetchesUsed += fetched;
 						result.itemsCreated++;
-						result.photosUploaded += photoCount;
+						result.photosUploaded += fetched;
+						result.processedThisCall++;
 					}
-					result.processedThisCall++;
 				} catch (err) {
 					result.errors.push({
 						context: `${product.id} / ${variant.id} (${product.name})`,
 						error: err instanceof Error ? err.message : String(err)
 					});
-					// Don't count failures toward maxToProcess — they're not
-					// real work, and a permanent failure shouldn't slow
-					// progress on the rest.
 				}
 			}
 		}
@@ -147,10 +185,11 @@ export async function importBatch(
 		.first<{ n: number }>();
 	result.totalImportedSoFar = totalRow?.n ?? 0;
 
-	// "hasMore" = either we hit maxToProcess this call (probably more
-	// unprocessed variants exist on later pages), or we exhausted the
-	// catalog without filling the batch (definitely done). Be explicit:
-	result.hasMore = result.processedThisCall === maxToProcess && !exhausted;
+	// "hasMore" = we hit the create budget or the subrequest budget this
+	// call, meaning there are still un-imported variants out there.
+	// If we walked the entire catalog (`exhausted`) without filling the
+	// create budget, we're truly done.
+	result.hasMore = !exhausted;
 
 	return result;
 }
@@ -246,6 +285,11 @@ async function createNew(
 	let photoCount = 0;
 	for (let i = 0; i < (product.images ?? []).length; i++) {
 		const img = product.images[i];
+		// Skip Squarespace's known-broken /null/ URLs without spending a
+		// subrequest on them. The budget check in importBatch already
+		// excludes these from its accounting, so we must skip the same
+		// set here for the count to add up.
+		if (!isUsablePhotoUrl(img.url)) continue;
 		try {
 			await importPhoto(db, r2, itemId, img.url, img.id, i, img.altText);
 			photoCount++;

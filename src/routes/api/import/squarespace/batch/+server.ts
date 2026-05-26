@@ -28,7 +28,10 @@ export const POST: RequestHandler = async (event) => {
 	const db = getDB(event);
 
 	try {
-		const batch = await importBatch(db, r2, apiKey, 10);
+		// Default batch size (5) is tuned to fit comfortably under the
+		// free-tier 50-subrequest-per-invocation limit. The library
+		// further pre-checks subrequest budget before each create.
+		const batch = await importBatch(db, r2, apiKey);
 		return json({ ok: true, batch });
 	} catch (err) {
 		throw error(500, err instanceof Error ? err.message : String(err));
