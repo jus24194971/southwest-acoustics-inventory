@@ -244,6 +244,71 @@ textarea {
 }
 
 /* =============================================================
+   Description body — Squarespace imports carry inline color/background
+   styles ("color: rgb(34, 34, 34)", "background: white") that fight
+   the dark workshop theme and render text as near-invisible. This
+   wrapper class neutralises any inline color/background and lets the
+   parent control text colour, while preserving structural styling
+   (bold, italic, headings, lists) and giving links a recognisable
+   gold accent.
+   ============================================================= */
+
+.description-body {
+	color: var(--color-ink-2);
+}
+.description-body *,
+.description-body p,
+.description-body span,
+.description-body div,
+.description-body li,
+.description-body h1,
+.description-body h2,
+.description-body h3,
+.description-body h4,
+.description-body h5,
+.description-body h6 {
+	color: inherit !important;
+	background-color: transparent !important;
+	background: transparent !important;
+}
+.description-body strong,
+.description-body b {
+	color: var(--color-ink) !important;
+	font-weight: 600;
+}
+.description-body em,
+.description-body i {
+	font-style: italic;
+}
+.description-body a {
+	color: var(--color-gold-bright) !important;
+	text-decoration: underline;
+}
+.description-body a:hover {
+	color: var(--color-gold) !important;
+}
+.description-body ul,
+.description-body ol {
+	margin: 0.5rem 0;
+	padding-left: 1.25rem;
+}
+.description-body ul {
+	list-style: disc;
+}
+.description-body ol {
+	list-style: decimal;
+}
+.description-body p {
+	margin: 0.5rem 0;
+}
+.description-body p:first-child {
+	margin-top: 0;
+}
+.description-body p:last-child {
+	margin-bottom: 0;
+}
+
+/* =============================================================
    Accessibility — font scaling + high contrast.
    These mirror the Listing Studio approach: a CSS zoom on a wrapper
    for font scale, a class on a wrapper for high contrast that

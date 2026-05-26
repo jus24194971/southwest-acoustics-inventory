@@ -2,7 +2,7 @@ import type { Actions, PageServerLoad } from './$types';
 import type { D1Database } from '@cloudflare/workers-types';
 import { error, fail, redirect } from '@sveltejs/kit';
 import { getDB } from '$lib/server/db';
-import { isCondition, normaliseAttr, ATTR_UNIQUE } from '$lib/server/sku';
+import { isCondition, normaliseAttr, ATTR_UNIQUE, generateSku, type Condition } from '$lib/server/sku';
 
 /**
  * Item detail page — the screen Dad spends most of his time on.
@@ -268,6 +268,11 @@ export const load: PageServerLoad = async (event) => {
 			attr_3_label: string | null;
 			attr_4_label: string | null;
 			attr_5_label: string | null;
+			attr_1_context_key: string | null;
+			attr_2_context_key: string | null;
+			attr_3_context_key: string | null;
+			attr_4_context_key: string | null;
+			attr_5_context_key: string | null;
 		}>,
 		parent: (parent.results[0] ?? null) as { id: number; sku: string; title: string } | null,
 		variants: variants.results as Array<{
@@ -303,6 +308,8 @@ export const actions: Actions = {
 		const priceStr = form.get('price')?.toString().trim();
 		const trackingMode = (form.get('tracking_mode') ?? item.tracking_mode).toString();
 		const stockQtyRaw = form.get('stock_qty')?.toString();
+		const newCategoryIdRaw = form.get('category_id')?.toString();
+		const keepSku = form.get('keep_sku') === 'on';
 
 		// Attribute slots — read positionally. Empty fields normalise to
 		// 'XXX' (no value). The matching _unique_desc only persists when
@@ -331,66 +338,117 @@ export const actions: Actions = {
 			return fail(400, { editErrors: errors });
 		}
 
+		// Resolve new category (may equal the current one).
+		const newCategoryId = newCategoryIdRaw ? parseInt(newCategoryIdRaw, 10) : item.category_id;
+		const newCat = await db
+			.prepare(`SELECT id, code FROM category WHERE id = ?`)
+			.bind(newCategoryId)
+			.first<{ id: number; code: string }>();
+		if (!newCat) {
+			const notFound: Record<string, string> = { category_id: 'Category not found.' };
+			return fail(400, { editErrors: notFound });
+		}
+
+		const categoryChanged = newCategoryId !== item.category_id;
+		const shouldRegenSku = categoryChanged && !keepSku;
+
 		const costCents = costStr ? Math.round(parseFloat(costStr) * 100) : null;
 		const priceCents = priceStr ? Math.round(parseFloat(priceStr) * 100) : null;
 
-		// Note: the SKU itself stays frozen — modifying the attr columns
-		// without regenerating the SKU is the intended behaviour. The
-		// labels Dad has already printed shouldn't suddenly disagree with
-		// the database. The detail page surfaces any drift inline.
-		await db
-			.prepare(
-				`UPDATE item
-				 SET title = ?, description = ?, description_html = ?,
-				     condition = ?, cost_cents = ?, price_cents = ?,
-				     tracking_mode = ?, stock_qty = ?,
-				     attr_1 = ?, attr_2 = ?, attr_3 = ?, attr_4 = ?, attr_5 = ?,
-				     attr_1_unique_desc = ?, attr_2_unique_desc = ?,
-				     attr_3_unique_desc = ?, attr_4_unique_desc = ?, attr_5_unique_desc = ?,
-				     updated_at = datetime('now')
-				 WHERE id = ?`
-			)
-			.bind(
-				title,
-				description || null,
-				descriptionHtml || null,
-				condition,
-				costCents,
-				priceCents,
-				trackingMode,
-				stockQty,
-				attrRaw[0].value,
-				attrRaw[1].value,
-				attrRaw[2].value,
-				attrRaw[3].value,
-				attrRaw[4].value,
-				attrRaw[0].value === ATTR_UNIQUE ? attrRaw[0].uniqueDesc : null,
-				attrRaw[1].value === ATTR_UNIQUE ? attrRaw[1].uniqueDesc : null,
-				attrRaw[2].value === ATTR_UNIQUE ? attrRaw[2].uniqueDesc : null,
-				attrRaw[3].value === ATTR_UNIQUE ? attrRaw[3].uniqueDesc : null,
-				attrRaw[4].value === ATTR_UNIQUE ? attrRaw[4].uniqueDesc : null,
-				item.id
-			)
-			.run();
+		// If the category changed and the user didn't tick "keep current
+		// SKU", allocate a fresh SKU under the new category's prefix +
+		// the just-picked attribute values. The old SKU is reflected in
+		// an 'adjust' movement so the audit trail explains the change.
+		let finalSku = item.sku;
+		if (shouldRegenSku) {
+			finalSku = await generateSku(db, {
+				categoryCode: newCat.code,
+				brandCode: item.brand_code ?? 'XXX',
+				modelCode: item.model ?? 'XXX',
+				condition: condition as Condition,
+				yearReceived: item.year_received,
+				attr1: attrRaw[0].value,
+				attr2: attrRaw[1].value,
+				attr3: attrRaw[2].value,
+				attr4: attrRaw[3].value,
+				attr5: attrRaw[4].value
+			});
+		}
 
-		throw redirect(303, `/items/${item.sku}`);
+		const writes = [
+			db
+				.prepare(
+					`UPDATE item
+					 SET sku = ?, category_id = ?,
+					     title = ?, description = ?, description_html = ?,
+					     condition = ?, cost_cents = ?, price_cents = ?,
+					     tracking_mode = ?, stock_qty = ?,
+					     attr_1 = ?, attr_2 = ?, attr_3 = ?, attr_4 = ?, attr_5 = ?,
+					     attr_1_unique_desc = ?, attr_2_unique_desc = ?,
+					     attr_3_unique_desc = ?, attr_4_unique_desc = ?, attr_5_unique_desc = ?,
+					     updated_at = datetime('now')
+					 WHERE id = ?`
+				)
+				.bind(
+					finalSku,
+					newCategoryId,
+					title,
+					description || null,
+					descriptionHtml || null,
+					condition,
+					costCents,
+					priceCents,
+					trackingMode,
+					stockQty,
+					attrRaw[0].value,
+					attrRaw[1].value,
+					attrRaw[2].value,
+					attrRaw[3].value,
+					attrRaw[4].value,
+					attrRaw[0].value === ATTR_UNIQUE ? attrRaw[0].uniqueDesc : null,
+					attrRaw[1].value === ATTR_UNIQUE ? attrRaw[1].uniqueDesc : null,
+					attrRaw[2].value === ATTR_UNIQUE ? attrRaw[2].uniqueDesc : null,
+					attrRaw[3].value === ATTR_UNIQUE ? attrRaw[3].uniqueDesc : null,
+					attrRaw[4].value === ATTR_UNIQUE ? attrRaw[4].uniqueDesc : null,
+					item.id
+				)
+		];
+		if (shouldRegenSku) {
+			writes.push(
+				db
+					.prepare(
+						`INSERT INTO movement (item_id, kind, note, actor)
+						 VALUES (?, 'adjust', ?, ?)`
+					)
+					.bind(
+						item.id,
+						`Recategorized to ${newCat.code}; SKU changed from ${item.sku} to ${finalSku}`,
+						event.locals?.userEmail ?? 'system'
+					)
+			);
+		} else if (categoryChanged) {
+			writes.push(
+				db
+					.prepare(
+						`INSERT INTO movement (item_id, kind, note, actor)
+						 VALUES (?, 'adjust', ?, ?)`
+					)
+					.bind(
+						item.id,
+						`Recategorized to ${newCat.code}; SKU kept as ${item.sku}`,
+						event.locals?.userEmail ?? 'system'
+					)
+			);
+		}
+		await db.batch(writes);
+
+		throw redirect(303, `/items/${finalSku}`);
 	},
 
-	changeCategory: async (event) => {
-		const db = getDB(event);
-		const item = await loadItemBySku(db, event.params.sku);
-		if (!item) throw error(404);
-
-		const newCatId = parseInt((await event.request.formData()).get('category_id')?.toString() ?? '', 10);
-		if (!Number.isInteger(newCatId)) return fail(400, { actionError: 'Pick a category.' });
-
-		await db
-			.prepare(`UPDATE item SET category_id = ?, updated_at = datetime('now') WHERE id = ?`)
-			.bind(newCatId, item.id)
-			.run();
-
-		throw redirect(303, `/items/${item.sku}`);
-	},
+	// (Category changes are folded into the `edit` action above so the
+	// new category's attribute values can be picked at the same time and
+	// the SKU can regenerate cleanly. The old standalone changeCategory
+	// action lived here; it was a strict subset of edit.)
 
 	transfer: async (event) => {
 		const db = getDB(event);

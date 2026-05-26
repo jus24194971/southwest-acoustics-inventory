@@ -9,7 +9,6 @@
 	// edit mode in place rather than opening a modal — fewer clicks,
 	// less spatial dislocation for Dad.
 	let editingDetails = $state(false);
-	let editingCategory = $state(false);
 	let showingTransfer = $state(false);
 	let showingRetire = $state(false);
 
@@ -118,6 +117,36 @@
 		untrack(() => data.item.tracking_mode)
 	);
 	let editStockQty = $state(untrack(() => data.item.stock_qty));
+
+	// Recategorize: while the edit form is open the user can pick a
+	// different category. The form-local categoryId drives the
+	// attribute slots' labels/contexts (independently from the saved
+	// item's category). If the user changes category, the SKU
+	// regenerates on submit unless they tick "Keep current SKU".
+	let editCategoryId = $state(untrack(() => data.item.category_id));
+	let keepSku = $state(false);
+
+	let editActiveCategory = $derived(
+		data.categories.find((c) => c.id === editCategoryId) ?? null
+	);
+	let editAttrSlots = $derived(
+		[1, 2, 3, 4, 5].map((n) => {
+			const cat = editActiveCategory;
+			const label = cat
+				? (cat[`attr_${n}_label` as keyof typeof cat] as string | null)
+				: null;
+			const contextKey = cat
+				? (cat[`attr_${n}_context_key` as keyof typeof cat] as string | null)
+				: null;
+			const values = contextKey
+				? data.attrValues
+						.filter((v) => v.context_key === contextKey)
+						.map((v) => ({ id: v.id, code: v.code, label: v.label }))
+				: [];
+			return { n, label, contextKey, values };
+		})
+	);
+	let categoryWillChange = $derived(editCategoryId !== data.item.category_id);
 
 	function isUnq(value: string): boolean {
 		return value.trim().toUpperCase() === 'UNQ';
@@ -296,39 +325,14 @@
 			<!-- CATEGORY ------------------------------------------ -->
 			<div class="panel px-4 py-3">
 				<p class="eyebrow mb-2">Category</p>
-				{#if editingCategory}
-					<form method="POST" action="?/changeCategory" class="space-y-2">
-						<select name="category_id" class="field text-sm">
-							{#each data.categories as cat (cat.id)}
-								<option value={cat.id} selected={cat.id === data.item.category_id}>
-									{cat.code} · {cat.name}
-								</option>
-							{/each}
-						</select>
-						<div class="flex gap-2">
-							<button type="submit" class="btn-primary px-3 py-1.5 text-xs">Save</button>
-							<button
-								type="button"
-								class="btn-ghost px-3 py-1.5 text-xs"
-								onclick={() => (editingCategory = false)}
-							>
-								Cancel
-							</button>
-						</div>
-					</form>
-				{:else}
-					<p class="text-sm">
-						<span class="font-mono text-[color:var(--color-gold)]">{data.item.cat_code}</span>
-						<span class="ml-2 text-[color:var(--color-ink)]">{data.item.cat_name}</span>
-					</p>
-					<button
-						type="button"
-						class="btn-ghost mt-2 w-full px-3 py-1.5 text-xs"
-						onclick={() => (editingCategory = true)}
-					>
-						Change category
-					</button>
-				{/if}
+				<p class="text-sm">
+					<span class="font-mono text-[color:var(--color-gold)]">{data.item.cat_code}</span>
+					<span class="ml-2 text-[color:var(--color-ink)]">{data.item.cat_name}</span>
+				</p>
+				<p class="mt-2 text-[11px] italic text-[color:var(--color-ink-3)]">
+					To change category, use the Edit button below — it lets you pick the new
+					category's attributes at the same time and regenerates the SKU cleanly.
+				</p>
 			</div>
 
 			<!-- SQUARESPACE LINK ---------------------------------- -->
@@ -474,7 +478,39 @@
 
 		{#if editingDetails}
 			<form method="POST" action="?/edit" class="space-y-3">
+				<!-- Category + condition: side by side at the top. Changing
+				     category rewires the attribute fieldset below. -->
 				<div class="grid gap-3 md:grid-cols-2">
+					<div class="space-y-1.5">
+						<label for="edit_category_id" class="eyebrow block">Category</label>
+						<select
+							id="edit_category_id"
+							name="category_id"
+							required
+							bind:value={editCategoryId}
+							class="field"
+						>
+							{#each data.categories as cat (cat.id)}
+								<option value={cat.id}>{cat.code} · {cat.name}</option>
+							{/each}
+						</select>
+						{#if form?.editErrors?.category_id}
+							<p class="text-xs text-[color:var(--color-rust-bright)]">
+								{form.editErrors.category_id}
+							</p>
+						{/if}
+					</div>
+
+					<div class="space-y-1.5">
+						<label for="condition" class="eyebrow block">Condition</label>
+						<select id="condition" name="condition" required class="field">
+							<option value="N" selected={data.item.condition === 'N'}>New</option>
+							<option value="U" selected={data.item.condition === 'U'}>Used</option>
+							<option value="R" selected={data.item.condition === 'R'}>Refurbished</option>
+							<option value="B" selected={data.item.condition === 'B'}>Broken / parts</option>
+						</select>
+					</div>
+
 					<div class="space-y-1.5 md:col-span-2">
 						<label for="title" class="eyebrow block">Title</label>
 						<input
@@ -488,16 +524,6 @@
 						{#if form?.editErrors?.title}
 							<p class="text-xs text-[color:var(--color-rust-bright)]">{form.editErrors.title}</p>
 						{/if}
-					</div>
-
-					<div class="space-y-1.5">
-						<label for="condition" class="eyebrow block">Condition</label>
-						<select id="condition" name="condition" required class="field">
-							<option value="N" selected={data.item.condition === 'N'}>New</option>
-							<option value="U" selected={data.item.condition === 'U'}>Used</option>
-							<option value="R" selected={data.item.condition === 'R'}>Refurbished</option>
-							<option value="B" selected={data.item.condition === 'B'}>Broken / parts</option>
-						</select>
 					</div>
 
 					<div class="grid grid-cols-2 gap-2">
@@ -565,16 +591,23 @@
 					{/if}
 				</fieldset>
 
-				<!-- Attributes -->
-				{#if attrSlots.some((s) => s.label != null)}
+				<!-- Attributes — react to the chosen category, not the
+				     item's current category, so changing category in the
+				     dropdown above swaps the slot labels immediately. -->
+				{#if editAttrSlots.some((s) => s.label != null)}
 					<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
 						<legend class="eyebrow px-2">Attributes</legend>
-						<p class="text-[11px] text-[color:var(--color-ink-3)]">
-							Editing attributes updates the columns but leaves the SKU unchanged. If you've
-							already printed labels, they'll still read the original values.
-						</p>
+						{#if categoryWillChange}
+							<p class="text-[11px] text-[color:var(--color-gold-bright)]">
+								Category change — pick fresh values for the new category's slots.
+							</p>
+						{:else}
+							<p class="text-[11px] text-[color:var(--color-ink-3)]">
+								Editing attributes without changing category leaves the SKU as-is.
+							</p>
+						{/if}
 						<div class="grid gap-3 sm:grid-cols-2">
-							{#each attrSlots as slot, i (slot.n)}
+							{#each editAttrSlots as slot, i (slot.n)}
 								{#if slot.label}
 									<div class="space-y-1.5">
 										<label for="attr_{slot.n}" class="eyebrow block">{slot.label}</label>
@@ -591,13 +624,39 @@
 												rows="2"
 												placeholder="Describe this one-of-a-kind {slot.label.toLowerCase()}…"
 												class="field text-sm"
-												>{slot.uniqueDesc ?? ''}</textarea
-											>
+											></textarea>
 										{/if}
 									</div>
 								{/if}
 							{/each}
 						</div>
+
+						<!-- Keep-SKU opt-out, only relevant when category is changing. -->
+						{#if categoryWillChange}
+							<label
+								class="flex items-start gap-3 rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-input)] p-3"
+							>
+								<input
+									type="checkbox"
+									name="keep_sku"
+									bind:checked={keepSku}
+									class="mt-0.5 h-4 w-4 accent-[color:var(--color-gold)]"
+									style="min-height: auto"
+								/>
+								<div class="space-y-0.5">
+									<span class="text-sm font-medium text-[color:var(--color-ink)]">
+										Keep current SKU
+									</span>
+									<p class="text-[11px] text-[color:var(--color-ink-3)]">
+										By default, recategorizing regenerates the SKU under the new
+										category's prefix
+										<span class="font-mono">({editActiveCategory?.code ?? '??'}-…)</span>.
+										Check this if you've already printed a label and need the SKU
+										<span class="font-mono">{data.item.sku}</span> to stick.
+									</p>
+								</div>
+							</label>
+						{/if}
 					</fieldset>
 				{/if}
 
@@ -630,10 +689,10 @@
 				</div>
 			</form>
 		{:else if data.item.description_html}
-			<!-- HTML descriptions come from Squarespace and are trusted -->
-			<div
-				class="prose prose-invert max-w-none text-sm text-[color:var(--color-ink-2)] [&_a]:text-[color:var(--color-gold-bright)] [&_a]:underline"
-			>
+			<!-- HTML descriptions come from Squarespace (trusted source).
+				 The .description-body class neutralises any inline color
+				 styles SS embedded so it reads against the dark theme. -->
+			<div class="description-body max-w-none text-sm">
 				{@html data.item.description_html}
 			</div>
 		{:else if data.item.description}
