@@ -33,6 +33,7 @@
 	},
 	"dependencies": {
 		"pdf-lib": "^1.17.1",
+		"qr-scanner": "^1.4.2",
 		"qrcode-generator": "^2.0.4"
 	}
 }
