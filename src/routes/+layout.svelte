@@ -9,7 +9,9 @@
 	const nav = [
 		{ href: '/', label: 'Overview' },
 		{ href: '/items', label: 'Items' },
-		{ href: '/locations', label: 'Locations' }
+		{ href: '/locations', label: 'Locations' },
+		{ href: '/categories', label: 'Categories' },
+		{ href: '/movements', label: 'Movements' }
 	] as const;
 
 	// Current path drives the active tab. Match on either exact path or

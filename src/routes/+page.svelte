@@ -38,14 +38,28 @@
 				{data.stats.locations}
 			</span>
 		</a>
-		<div class="panel flex flex-col gap-1 px-4 py-4">
+		<a
+			href="/categories"
+			class="panel group flex flex-col gap-1 px-4 py-4 transition-colors hover:border-[color:var(--color-gold-dim)]"
+		>
 			<span class="eyebrow">Categories</span>
-			<span class="headline text-3xl">{data.stats.categories}</span>
-		</div>
-		<div class="panel flex flex-col gap-1 px-4 py-4">
+			<span
+				class="headline text-3xl text-[color:var(--color-ink)] transition-colors group-hover:text-[color:var(--color-gold-bright)]"
+			>
+				{data.stats.categories}
+			</span>
+		</a>
+		<a
+			href="/movements"
+			class="panel group flex flex-col gap-1 px-4 py-4 transition-colors hover:border-[color:var(--color-gold-dim)]"
+		>
 			<span class="eyebrow">Movements</span>
-			<span class="headline text-3xl">{data.stats.movements}</span>
-		</div>
+			<span
+				class="headline text-3xl text-[color:var(--color-ink)] transition-colors group-hover:text-[color:var(--color-gold-bright)]"
+			>
+				{data.stats.movements}
+			</span>
+		</a>
 	</div>
 
 	<!-- Primary action area. -->
