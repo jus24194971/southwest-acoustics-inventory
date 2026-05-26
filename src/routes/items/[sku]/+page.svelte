@@ -218,7 +218,7 @@
 							<option value="">— unassigned —</option>
 							{#each data.bins as b (b.id)}
 								<option value={b.id} selected={b.id === data.item.current_bin_id}>
-									{b.loc_code} / {b.bin_code} ({b.loc_name})
+									{b.path}
 								</option>
 							{/each}
 						</select>

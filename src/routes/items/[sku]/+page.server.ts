@@ -173,11 +173,29 @@ export const load: PageServerLoad = async (event) => {
 			.bind(item.id),
 
 		db.prepare(
-			`SELECT bin.id, bin.code AS bin_code, loc.code AS loc_code, loc.name AS loc_name
-			 FROM bin
-			 JOIN location loc ON loc.id = bin.location_id
-			 WHERE bin.deleted_at IS NULL AND loc.deleted_at IS NULL
-			 ORDER BY loc.code, bin.code`
+			// Tree-aware bin list with full path strings for the transfer
+			// picker — see the matching CTE in /items/new for the shape.
+			`WITH RECURSIVE bin_tree(id, parent_bin_id, code, name, depth, path) AS (
+				SELECT b.id, b.parent_bin_id, b.code, b.name,
+				       0 AS depth,
+				       loc.code || ' / ' || b.code AS path
+				FROM bin b
+				JOIN location loc ON loc.id = b.location_id
+				WHERE b.parent_bin_id IS NULL
+				  AND b.deleted_at IS NULL AND loc.deleted_at IS NULL
+
+				UNION ALL
+
+				SELECT b.id, b.parent_bin_id, b.code, b.name,
+				       bt.depth + 1,
+				       bt.path || ' / ' || b.code
+				FROM bin b
+				JOIN bin_tree bt ON b.parent_bin_id = bt.id
+				WHERE b.deleted_at IS NULL
+			)
+			SELECT id, code AS bin_code, depth, path
+			FROM bin_tree
+			ORDER BY path`
 		),
 
 		db.prepare(
@@ -208,8 +226,8 @@ export const load: PageServerLoad = async (event) => {
 		bins: bins.results as Array<{
 			id: number;
 			bin_code: string;
-			loc_code: string;
-			loc_name: string;
+			depth: number;
+			path: string;
 		}>,
 		categories: categories.results as Array<{
 			id: number;

@@ -3,17 +3,13 @@ import { error, fail, redirect } from '@sveltejs/kit';
 import { getDB } from '$lib/server/db';
 
 /**
- * Location detail — view + manage the bins under one location.
+ * Location detail — nested bin tree.
  *
- * Bins are intentionally minimal: a short code that's friendly to print
- * on a label and scan ("A-12", "DRAWER-3"), an optional friendly name,
- * an optional note. We track item count per bin so the user can see
- * what's where at a glance, but the bin itself stays generic — Dad's
- * organization is still settling, and bins shouldn't bake in assumptions.
- *
- * Soft delete on retire: items historically located in a bin should
- * still resolve their bin name when reviewing movement history, so the
- * row sticks around but stops showing up in pickers.
+ * Bins now form a tree per-location (see migration 0006). We use a
+ * recursive CTE to enumerate the tree in depth-first order, carrying
+ * a path string and depth for rendering. Item counts include direct
+ * children only; rolled-up "items in this subtree" totals are
+ * computed client-side from the same list.
  */
 
 interface LocationRow {
@@ -22,16 +18,17 @@ interface LocationRow {
 	name: string;
 	address: string | null;
 	notes: string | null;
-	created_at: string;
 }
 
-interface BinRow {
+export interface BinTreeRow {
 	id: number;
+	parent_bin_id: number | null;
 	code: string;
 	name: string | null;
 	notes: string | null;
+	depth: number;
+	path: string;
 	item_count: number;
-	created_at: string;
 }
 
 export const load: PageServerLoad = async (event) => {
@@ -45,23 +42,41 @@ export const load: PageServerLoad = async (event) => {
 		.first<LocationRow>();
 	if (!location) throw error(404, 'Location not found');
 
-	// Bins + count of currently-on-hand items per bin. Retired items don't
-	// count toward the visible total — they're history, not stock.
+	// Recursive CTE walks the tree from each root (parent_bin_id IS NULL)
+	// outward, building up a slash-joined path and tracking depth. Items
+	// per bin counted via LEFT JOIN on the outer SELECT.
 	const { results: bins } = await db
 		.prepare(
-			`SELECT
-				bin.id, bin.code, bin.name, bin.notes, bin.created_at,
-				COUNT(CASE WHEN item.retired_at IS NULL AND item.deleted_at IS NULL THEN 1 END) AS item_count
-			 FROM bin
-			 LEFT JOIN item ON item.current_bin_id = bin.id
-			 WHERE bin.location_id = ? AND bin.deleted_at IS NULL
-			 GROUP BY bin.id, bin.code, bin.name, bin.notes, bin.created_at
-			 ORDER BY bin.code`
+			`WITH RECURSIVE bin_tree(id, parent_bin_id, code, name, notes, depth, path) AS (
+				SELECT id, parent_bin_id, code, name, notes,
+				       0 AS depth,
+				       code AS path
+				FROM bin
+				WHERE parent_bin_id IS NULL
+				  AND location_id = ?
+				  AND deleted_at IS NULL
+
+				UNION ALL
+
+				SELECT b.id, b.parent_bin_id, b.code, b.name, b.notes,
+				       bt.depth + 1,
+				       bt.path || ' / ' || b.code
+				FROM bin b
+				JOIN bin_tree bt ON b.parent_bin_id = bt.id
+				WHERE b.deleted_at IS NULL
+			)
+			SELECT bt.id, bt.parent_bin_id, bt.code, bt.name, bt.notes,
+			       bt.depth, bt.path,
+			       COUNT(CASE WHEN item.retired_at IS NULL AND item.deleted_at IS NULL THEN 1 END) AS item_count
+			FROM bin_tree bt
+			LEFT JOIN item ON item.current_bin_id = bt.id
+			GROUP BY bt.id, bt.parent_bin_id, bt.code, bt.name, bt.notes, bt.depth, bt.path
+			ORDER BY bt.path`
 		)
 		.bind(id)
-		.all<BinRow>();
+		.all<BinTreeRow>();
 
-	return { location, bins };
+	return { location, bins: bins as BinTreeRow[] };
 };
 
 export const actions: Actions = {
@@ -73,15 +88,30 @@ export const actions: Actions = {
 		const code = (form.get('code') ?? '').toString().trim().toUpperCase();
 		const name = (form.get('name') ?? '').toString().trim() || null;
 		const notes = (form.get('notes') ?? '').toString().trim() || null;
+		const parentIdRaw = form.get('parent_bin_id')?.toString().trim();
+		const parentId = parentIdRaw ? parseInt(parentIdRaw, 10) : null;
 
 		if (!code) return fail(400, { addError: 'Bin code is required.' });
-		// Bin code uniqueness is per-location via the (location_id, code)
-		// UNIQUE index — let the DB catch duplicates, render a friendly
-		// message back.
+
+		// Verify the parent belongs to this location (don't let a Cabinet
+		// in Garage adopt a Drawer in Warehouse via crafted form data).
+		if (parentId != null) {
+			const parent = await db
+				.prepare(
+					`SELECT id FROM bin WHERE id = ? AND location_id = ? AND deleted_at IS NULL`
+				)
+				.bind(parentId, locationId)
+				.first();
+			if (!parent) return fail(400, { addError: 'Selected parent bin not found.' });
+		}
+
 		try {
 			await db
-				.prepare(`INSERT INTO bin (location_id, code, name, notes) VALUES (?, ?, ?, ?)`)
-				.bind(locationId, code, name, notes)
+				.prepare(
+					`INSERT INTO bin (location_id, parent_bin_id, code, name, notes)
+					 VALUES (?, ?, ?, ?, ?)`
+				)
+				.bind(locationId, parentId, code, name, notes)
 				.run();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -95,9 +125,6 @@ export const actions: Actions = {
 	},
 
 	addBulk: async (event) => {
-		// Convenience: enter a prefix + a start/end range and we create
-		// every bin in between in one go ("A-1" through "A-10"). Common
-		// shop pattern, much faster than adding 10 bins one-by-one.
 		const db = getDB(event);
 		const locationId = parseInt(event.params.id, 10);
 
@@ -106,31 +133,41 @@ export const actions: Actions = {
 		const startStr = form.get('start')?.toString();
 		const endStr = form.get('end')?.toString();
 		const pad = parseInt((form.get('pad') ?? '0').toString(), 10) || 0;
+		const parentIdRaw = form.get('parent_bin_id')?.toString().trim();
+		const parentId = parentIdRaw ? parseInt(parentIdRaw, 10) : null;
 
 		const start = startStr ? parseInt(startStr, 10) : NaN;
 		const end = endStr ? parseInt(endStr, 10) : NaN;
 
-		if (!prefix) return fail(400, { bulkError: 'Prefix is required (e.g. "A-").' });
+		if (!prefix) return fail(400, { bulkError: 'Prefix is required.' });
 		if (!Number.isInteger(start) || !Number.isInteger(end) || start > end) {
 			return fail(400, { bulkError: 'Start and end must be numbers, with start ≤ end.' });
 		}
 		if (end - start > 200) {
-			return fail(400, { bulkError: 'Cap of 200 bins per bulk add — split into multiple calls.' });
+			return fail(400, { bulkError: 'Cap of 200 bins per bulk add.' });
 		}
 
-		// Bulk INSERT via batch. Existing codes (if any) are skipped via
-		// ON CONFLICT so the caller can re-run safely.
+		if (parentId != null) {
+			const parent = await db
+				.prepare(
+					`SELECT id FROM bin WHERE id = ? AND location_id = ? AND deleted_at IS NULL`
+				)
+				.bind(parentId, locationId)
+				.first();
+			if (!parent) return fail(400, { bulkError: 'Selected parent bin not found.' });
+		}
+
 		const stmts = [];
 		for (let n = start; n <= end; n++) {
 			const code = `${prefix}${String(n).padStart(pad, '0')}`;
 			stmts.push(
 				db
 					.prepare(
-						`INSERT INTO bin (location_id, code)
-						 VALUES (?, ?)
+						`INSERT INTO bin (location_id, parent_bin_id, code)
+						 VALUES (?, ?, ?)
 						 ON CONFLICT(location_id, code) DO NOTHING`
 					)
-					.bind(locationId, code)
+					.bind(locationId, parentId, code)
 			);
 		}
 		await db.batch(stmts);
@@ -176,19 +213,29 @@ export const actions: Actions = {
 		const binId = parseInt(form.get('bin_id')?.toString() ?? '', 10);
 		if (!Number.isInteger(binId)) return fail(400, { actionError: 'Bad bin id.' });
 
-		// Don't retire a bin that still holds items — the user should
-		// transfer/retire those first. The error tells them how many,
-		// so they know what they're dealing with.
-		const inUse = await db
+		// Block retire if the bin holds items OR has live children.
+		// Empty out / move children first.
+		const blockers = await db
 			.prepare(
-				`SELECT COUNT(*) AS n FROM item
-				 WHERE current_bin_id = ? AND retired_at IS NULL AND deleted_at IS NULL`
+				`SELECT
+					(SELECT COUNT(*) FROM item
+					 WHERE current_bin_id = ?
+					   AND retired_at IS NULL AND deleted_at IS NULL) AS items,
+					(SELECT COUNT(*) FROM bin
+					 WHERE parent_bin_id = ?
+					   AND deleted_at IS NULL) AS children`
 			)
-			.bind(binId)
-			.first<{ n: number }>();
-		if ((inUse?.n ?? 0) > 0) {
+			.bind(binId, binId)
+			.first<{ items: number; children: number }>();
+
+		if ((blockers?.items ?? 0) > 0) {
 			return fail(400, {
-				actionError: `Can't retire — this bin still holds ${inUse?.n} item(s). Transfer them out first.`
+				actionError: `Can't retire — this bin still holds ${blockers?.items} item(s). Transfer them out first.`
+			});
+		}
+		if ((blockers?.children ?? 0) > 0) {
+			return fail(400, {
+				actionError: `Can't retire — this bin has ${blockers?.children} child bin(s). Retire or move them first.`
 			});
 		}
 

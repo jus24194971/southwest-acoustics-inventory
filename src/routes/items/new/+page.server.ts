@@ -39,18 +39,37 @@ export const load: PageServerLoad = async (event) => {
 		),
 		db.prepare(`SELECT id, code, name FROM brand ORDER BY name`),
 		db.prepare(
-			`SELECT bin.id, bin.code AS bin_code, loc.code AS loc_code, loc.name AS loc_name
-			 FROM bin
-			 JOIN location loc ON loc.id = bin.location_id
-			 WHERE bin.deleted_at IS NULL AND loc.deleted_at IS NULL
-			 ORDER BY loc.code, bin.code`
+			// Tree-aware bin list with full path strings ("GAR / Main
+			// Cabinet / Drawer 1 / Bin 3") suitable for the picker.
+			// Recursive CTE walks from each location root outward.
+			`WITH RECURSIVE bin_tree(id, location_id, parent_bin_id, code, name, depth, path) AS (
+				SELECT b.id, b.location_id, b.parent_bin_id, b.code, b.name,
+				       0 AS depth,
+				       loc.code || ' / ' || b.code AS path
+				FROM bin b
+				JOIN location loc ON loc.id = b.location_id
+				WHERE b.parent_bin_id IS NULL
+				  AND b.deleted_at IS NULL AND loc.deleted_at IS NULL
+
+				UNION ALL
+
+				SELECT b.id, b.location_id, b.parent_bin_id, b.code, b.name,
+				       bt.depth + 1,
+				       bt.path || ' / ' || b.code
+				FROM bin b
+				JOIN bin_tree bt ON b.parent_bin_id = bt.id
+				WHERE b.deleted_at IS NULL
+			)
+			SELECT id, code AS bin_code, depth, path
+			FROM bin_tree
+			ORDER BY path`
 		)
 	]);
 
 	return {
 		categories: categories.results as CategoryRow[],
 		brands: brands.results as Array<{ id: number; code: string; name: string }>,
-		bins: bins.results as Array<{ id: number; bin_code: string; loc_code: string; loc_name: string }>
+		bins: bins.results as Array<{ id: number; bin_code: string; depth: number; path: string }>
 	};
 };
 

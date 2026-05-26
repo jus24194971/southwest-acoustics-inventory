@@ -249,7 +249,7 @@
 				<select id="bin_id" name="bin_id" class="field">
 					<option value="">— unassigned —</option>
 					{#each data.bins as bin (bin.id)}
-						<option value={bin.id}>{bin.loc_code} / {bin.bin_code} ({bin.loc_name})</option>
+						<option value={bin.id}>{bin.path}</option>
 					{/each}
 				</select>
 			</div>
