@@ -1,17 +1,20 @@
 <script lang="ts">
 	import type { PageData } from './$types';
-	import type { BatchResult, ImportError } from '$lib/server/squarespace_import';
+	import type {
+		BackfillResult,
+		BatchResult,
+		ImportError
+	} from '$lib/server/squarespace_import';
 
 	let { data }: { data: PageData } = $props();
 
-	// Local state for the polling loop. Each batch returned by the
-	// /api/import/squarespace/batch endpoint is appended to `log` so the
-	// user sees progress accumulate. Aggregate totals roll up across
-	// batches for the headline counters.
+	// Local state for the polling loops. Each batch / backfill response
+	// is appended to `log` so the user sees progress accumulate.
 	type LogEntry =
 		| { kind: 'batch'; result: BatchResult }
+		| { kind: 'backfill'; result: BackfillResult }
 		| { kind: 'error'; message: string }
-		| { kind: 'done'; total: number };
+		| { kind: 'done'; total: number; mode: 'import' | 'backfill' };
 
 	let running = $state(false);
 	let log = $state<LogEntry[]>([]);
@@ -50,12 +53,57 @@
 				aggregate.errors = [...aggregate.errors, ...batch.errors];
 
 				if (!batch.hasMore) {
-					log = [...log, { kind: 'done', total: batch.totalImportedSoFar }];
+					log = [
+						...log,
+						{ kind: 'done', total: batch.totalImportedSoFar, mode: 'import' }
+					];
 					break;
 				}
 			}
 		} catch (err) {
 			log = [...log, { kind: 'error', message: err instanceof Error ? err.message : String(err) }];
+		} finally {
+			running = false;
+		}
+	}
+
+	async function startBackfill() {
+		running = true;
+		log = [];
+		aggregate = { created: 0, updated: 0, photos: 0, errors: [] };
+
+		try {
+			while (true) {
+				const res = await fetch('/api/import/squarespace/backfill', { method: 'POST' });
+				if (!res.ok) {
+					const text = await res.text();
+					log = [
+						...log,
+						{ kind: 'error', message: `Server returned ${res.status}: ${text.slice(0, 200)}` }
+					];
+					break;
+				}
+
+				const payload = (await res.json()) as { ok: boolean; result: BackfillResult };
+				const r = payload.result;
+
+				log = [...log, { kind: 'backfill', result: r }];
+				aggregate.photos += r.photosAdded;
+				aggregate.errors = [...aggregate.errors, ...r.errors];
+
+				if (!r.hasMore) {
+					log = [
+						...log,
+						{ kind: 'done', total: aggregate.photos, mode: 'backfill' }
+					];
+					break;
+				}
+			}
+		} catch (err) {
+			log = [
+				...log,
+				{ kind: 'error', message: err instanceof Error ? err.message : String(err) }
+			];
 		} finally {
 			running = false;
 		}
@@ -134,18 +182,23 @@
 			</p>
 		</div>
 
-		<!-- ============= Import controls + log ============= -->
+		<!-- ============= Import + backfill controls ============= -->
 		<div class="panel px-6 py-5">
-			<div class="flex items-center gap-3">
+			<div class="flex flex-wrap items-center gap-3">
 				<button class="btn-primary" onclick={startImport} disabled={running}>
 					{#if running}
-						Importing…
+						Working…
 					{:else if (data.alreadyImportedCount ?? 0) > 0}
 						Continue / refresh import
 					{:else}
 						Start import
 					{/if}
 				</button>
+				{#if (data.alreadyImportedCount ?? 0) > 0}
+					<button class="btn-ghost" onclick={startBackfill} disabled={running}>
+						Backfill missing photos
+					</button>
+				{/if}
 				{#if running}
 					<span class="eyebrow text-[color:var(--color-gold-bright)]"
 						>in progress · do not close tab</span
@@ -154,8 +207,13 @@
 			</div>
 
 			<p class="mt-3 text-xs italic text-[color:var(--color-ink-3)]">
-				Processes ~10 variants per server call and continues automatically until done. Each call
-				downloads photos to R2 — that's the slow part.
+				<strong class="not-italic text-[color:var(--color-ink-2)]">Import</strong> creates new
+				items + refreshes metadata. <strong class="not-italic text-[color:var(--color-ink-2)]"
+					>Backfill</strong
+				>
+				re-scans the catalog for items that have fewer photos than Squarespace has and fetches the
+				missing ones. Both batch into ~5–40 photos per server call to stay under Cloudflare's
+				per-invocation subrequest limit.
 			</p>
 
 			{#if log.length > 0 || aggregate.created > 0 || aggregate.updated > 0}
@@ -204,11 +262,30 @@
 										>
 									{/if}
 								</div>
+							{:else if entry.kind === 'backfill'}
+								<div class="text-[color:var(--color-ink-2)]">
+									backfill · scanned
+									<span class="text-[color:var(--color-ink)]">{entry.result.itemsScanned}</span>
+									· photos
+									<span class="text-[color:var(--color-moss-bright)]"
+										>+{entry.result.photosAdded}</span
+									>
+									{#if entry.result.errors.length > 0}
+										·
+										<span class="text-[color:var(--color-rust-bright)]"
+											>{entry.result.errors.length} err</span
+										>
+									{/if}
+								</div>
 							{:else if entry.kind === 'error'}
 								<div class="text-[color:var(--color-rust-bright)]">! {entry.message}</div>
 							{:else if entry.kind === 'done'}
 								<div class="mt-2 text-[color:var(--color-moss-bright)]">
-									✓ done · {entry.total} items now tracked from Squarespace
+									{#if entry.mode === 'import'}
+										✓ done · {entry.total} items now tracked from Squarespace
+									{:else}
+										✓ backfill done · {entry.total} photo{entry.total === 1 ? '' : 's'} recovered
+									{/if}
 								</div>
 							{/if}
 						{/each}

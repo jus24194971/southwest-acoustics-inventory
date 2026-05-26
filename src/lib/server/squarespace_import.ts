@@ -376,3 +376,119 @@ function extFromContentType(ct: string): string {
 	if (lower.includes('gif')) return 'gif';
 	return 'jpg';
 }
+
+// =========================================================================
+// Photo backfill
+// =========================================================================
+//
+// During the initial import, photos can be lost three ways:
+//   1. The /null/ skip (legitimate — there's nothing to download)
+//   2. A subrequest-budget bail mid-product
+//   3. A transient SS 4xx (like the static1 hot-link block before we
+//      switched to browser-shaped headers)
+//
+// (1) is permanent and we ignore it. (2) and (3) leave items with fewer
+// item_photo rows than the SS product has images. This pass reconciles
+// them: walk SS, find items short on photos, fetch the missing URLs,
+// insert the matching item_photo rows. Same subrequest budget rules as
+// the main importer — call repeatedly until hasMore is false.
+
+export interface BackfillResult {
+	itemsScanned: number;
+	photosAdded: number;
+	hasMore: boolean;
+	errors: ImportError[];
+}
+
+export async function backfillMissingPhotos(
+	db: D1Database,
+	r2: R2Bucket,
+	apiKey: string,
+	maxPhotosToFetch: number = PHOTO_SUBREQUEST_BUDGET
+): Promise<BackfillResult> {
+	const result: BackfillResult = {
+		itemsScanned: 0,
+		photosAdded: 0,
+		hasMore: false,
+		errors: []
+	};
+
+	let cursor: string | undefined;
+	let exhausted = false;
+
+	while (result.photosAdded < maxPhotosToFetch && !exhausted) {
+		const page = await listProducts(apiKey, { cursor });
+
+		for (const product of page.products) {
+			if (result.photosAdded >= maxPhotosToFetch) break;
+
+			for (const variant of product.variants) {
+				if (result.photosAdded >= maxPhotosToFetch) break;
+
+				const item = await db
+					.prepare(
+						`SELECT id FROM item WHERE squarespace_product_id = ? AND squarespace_variant_id = ?`
+					)
+					.bind(product.id, variant.id)
+					.first<{ id: number }>();
+
+				// If the item doesn't exist yet, this is the importer's
+				// job not ours — silently skip.
+				if (!item) continue;
+				result.itemsScanned++;
+
+				// Identify which SS image URLs we don't yet have for this item.
+				const have = await db
+					.prepare(`SELECT source_url FROM item_photo WHERE item_id = ?`)
+					.bind(item.id)
+					.all<{ source_url: string | null }>();
+				const haveUrls = new Set(
+					have.results.map((r) => r.source_url).filter((u): u is string => !!u)
+				);
+
+				const ssImages = product.images ?? [];
+				const missing = ssImages.filter(
+					(img) => isUsablePhotoUrl(img.url) && !haveUrls.has(img.url)
+				);
+				if (missing.length === 0) continue;
+
+				// Pre-flight: would this item push us over budget? Bail so
+				// the next call can do it from a fresh budget.
+				if (result.photosAdded + missing.length > maxPhotosToFetch) {
+					exhausted = true;
+					break;
+				}
+
+				for (const img of missing) {
+					// Use the SS image's index in its native array as the
+					// item_photo.position, so display order matches Squarespace.
+					const position = ssImages.indexOf(img);
+					try {
+						await importPhoto(db, r2, item.id, img.url, img.id, position, img.altText);
+						result.photosAdded++;
+					} catch (err) {
+						result.errors.push({
+							context: `photo ${img.id} on item ${item.id}`,
+							error: err instanceof Error ? err.message : String(err)
+						});
+					}
+				}
+			}
+			if (exhausted) break;
+		}
+
+		if (!exhausted && page.pagination.hasNextPage && page.pagination.nextPageCursor) {
+			cursor = page.pagination.nextPageCursor;
+		} else if (!exhausted) {
+			// Walked the whole catalog — nothing left to reconcile.
+			exhausted = true;
+		}
+	}
+
+	// hasMore = we stopped because of budget, not because we ran out of
+	// products. If `exhausted` is true and we didn't trigger it via the
+	// budget pre-check, we're truly done.
+	result.hasMore = result.photosAdded >= maxPhotosToFetch;
+
+	return result;
+}
