@@ -45,6 +45,66 @@
 	let lastScannedAt = 0;
 	let busy = $state(false);
 
+	// Sound feedback — synthesised via Web Audio so we don't ship audio
+	// files. Default ON; persisted per-device via localStorage so Dad
+	// can mute it on the shop tablet without affecting the phone.
+	let soundOn = $state(true);
+	let audioCtx: AudioContext | null = null;
+
+	function getCtx(): AudioContext | null {
+		if (!browser) return null;
+		if (!audioCtx) {
+			try {
+				const Ctor =
+					(window as unknown as { AudioContext: typeof AudioContext }).AudioContext ??
+					(window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+				audioCtx = new Ctor();
+			} catch {
+				return null;
+			}
+		}
+		return audioCtx;
+	}
+
+	/** Play a single tone with a fast attack and exponential decay. */
+	function tone(frequency: number, duration: number, volume = 0.18, type: OscillatorType = 'sine') {
+		const ctx = getCtx();
+		if (!ctx) return;
+		const osc = ctx.createOscillator();
+		const gain = ctx.createGain();
+		osc.frequency.value = frequency;
+		osc.type = type;
+		const t = ctx.currentTime;
+		gain.gain.setValueAtTime(0, t);
+		gain.gain.linearRampToValueAtTime(volume, t + 0.005);
+		gain.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+		osc.connect(gain).connect(ctx.destination);
+		osc.start(t);
+		osc.stop(t + duration);
+	}
+
+	function playSuccess() {
+		if (!soundOn) return;
+		// Two short ascending notes — pleasant "got it" chime.
+		tone(880, 0.07); // A5
+		setTimeout(() => tone(1318.5, 0.1), 70); // E6
+	}
+
+	function playError() {
+		if (!soundOn) return;
+		// Lower-pitched square wave for a buzzy "no" — distinct from
+		// success so Dad can tell without looking at the screen.
+		tone(196, 0.18, 0.22, 'square'); // G3
+		setTimeout(() => tone(165, 0.18, 0.22, 'square'), 120); // E3
+	}
+
+	function toggleSound() {
+		soundOn = !soundOn;
+		if (browser) localStorage.setItem('scan-sound-on', soundOn ? '1' : '0');
+		// Confirm with a tap so Dad hears what "on" sounds like.
+		if (soundOn) tone(660, 0.05);
+	}
+
 	// Modes config ------------------------------------------------------
 	const MODES: Record<Mode, { label: string; sub: string; pill: string }> = {
 		lookup: {
@@ -88,6 +148,7 @@
 	async function handleRawScan(raw: string) {
 		const sku = extractSku(raw);
 		if (!sku) {
+			playError();
 			pushLog({
 				at: new Date(),
 				sku: raw.slice(0, 32),
@@ -120,6 +181,7 @@
 
 			if (!res.ok) {
 				const text = await res.text();
+				playError();
 				pushLog({
 					at: new Date(),
 					sku,
@@ -135,6 +197,7 @@
 				item: ScanItem;
 				message: string;
 			};
+			playSuccess();
 			pushLog({
 				at: new Date(),
 				sku,
@@ -144,6 +207,7 @@
 				item: data.item
 			});
 		} catch (err) {
+			playError();
 			pushLog({
 				at: new Date(),
 				sku,
@@ -210,7 +274,12 @@
 	}
 
 	onMount(() => {
-		if (browser) manualInputEl?.focus();
+		if (!browser) return;
+		// Restore the per-device sound preference if Dad has muted it
+		// here before. Default ON for first-time visitors.
+		const saved = localStorage.getItem('scan-sound-on');
+		if (saved === '0') soundOn = false;
+		manualInputEl?.focus();
 	});
 	onDestroy(() => {
 		void stopCamera();
@@ -223,8 +292,20 @@
 
 <section class="space-y-6">
 	<header class="space-y-1">
-		<p class="eyebrow">Picking & movement</p>
-		<h1 class="headline text-3xl">Scan</h1>
+		<div class="flex items-start justify-between gap-3">
+			<div>
+				<p class="eyebrow">Picking & movement</p>
+				<h1 class="headline text-3xl">Scan</h1>
+			</div>
+			<button
+				type="button"
+				onclick={toggleSound}
+				class="btn-ghost flex-shrink-0 px-3 py-1.5 text-xs"
+				title={soundOn ? 'Sound is on — click to mute' : 'Sound is off — click to enable'}
+			>
+				{soundOn ? '🔊 Sound on' : '🔇 Sound off'}
+			</button>
+		</div>
 		<p class="text-sm text-[color:var(--color-ink-3)]">
 			Camera for the phone, USB scanner for the bench. Pick a mode first — every scan after that
 			runs the same action.
