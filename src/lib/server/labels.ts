@@ -113,6 +113,7 @@ export async function buildLabelsPdf(
 	doc.setProducer('SW Acoustics Inventory');
 
 	const monoFont = await doc.embedFont(StandardFonts.Courier);
+	const monoBold = await doc.embedFont(StandardFonts.CourierBold);
 	const sansFont = await doc.embedFont(StandardFonts.Helvetica);
 	const sansBold = await doc.embedFont(StandardFonts.HelveticaBold);
 	const italic = await doc.embedFont(StandardFonts.HelveticaOblique);
@@ -122,6 +123,7 @@ export async function buildLabelsPdf(
 			const page = doc.addPage([widthPt, heightPt]);
 			await renderLabel(doc, page, label, template, {
 				monoFont,
+				monoBold,
 				sansFont,
 				sansBold,
 				italic
@@ -134,6 +136,7 @@ export async function buildLabelsPdf(
 
 interface Fonts {
 	monoFont: PDFFont;
+	monoBold: PDFFont;
 	sansFont: PDFFont;
 	sansBold: PDFFont;
 	italic: PDFFont;
@@ -216,7 +219,9 @@ async function renderLabel(
 	});
 
 	if (label.kind === 'item') {
-		// Item label — split the 40-char SKU into base + attrs.
+		// Item label — split the 40-char SKU into base + attrs. Both lines
+		// in Courier Bold so the SKU prints heavy and stays legible at
+		// 7pt on glossy thermal stock.
 		const baseSku = label.sku.slice(0, 20); // CAT-BRAND-MODEL-COND-YY-SEQ
 		const attrSku = label.sku.length > 21 ? label.sku.slice(21) : ''; // A1-...-A5
 
@@ -224,7 +229,7 @@ async function renderLabel(
 			x: textX,
 			y: yPrimary,
 			size: 7,
-			font: fonts.monoFont,
+			font: fonts.monoBold,
 			color: rgb(0, 0, 0)
 		});
 
@@ -233,8 +238,8 @@ async function renderLabel(
 				x: textX,
 				y: ySecondary,
 				size: 7,
-				font: fonts.monoFont,
-				color: rgb(0.3, 0.3, 0.3)
+				font: fonts.monoBold,
+				color: rgb(0, 0, 0)
 			});
 		}
 
@@ -264,8 +269,8 @@ async function renderLabel(
 			x: textX,
 			y: ySecondary,
 			size: 6,
-			font: fonts.monoFont,
-			color: rgb(0.35, 0.35, 0.35)
+			font: fonts.monoBold,
+			color: rgb(0.2, 0.2, 0.2)
 		});
 
 		if (label.name) {
