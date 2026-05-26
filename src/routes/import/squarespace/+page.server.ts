@@ -1,18 +1,14 @@
 import type { PageServerLoad } from './$types';
 import { listProducts, SquarespaceError } from '$lib/server/squarespace';
+import { getDB } from '$lib/server/db';
 
 /**
- * Diagnostic page for the Squarespace Commerce API.
+ * Diagnostic + importer for Squarespace.
  *
- * Pulls page 1 of products and reports what came back — explicitly does
- * NOT write anything to inventory. The point is to confirm:
- *
- *   1. The SQUARESPACE_API_KEY secret is reachable from the worker
- *   2. The key has at least Products read scope (no 401/403)
- *   3. Squarespace has products to import (count, sample, pagination)
- *
- * Once this page reports OK, the real importer is just plumbing on top
- * of `listProducts()` plus a few D1 inserts + R2 puts per item.
+ * The page load is read-only: it confirms we can hit SS, reports counts,
+ * and shows a sample. The `runBatch` form action is what actually
+ * writes inventory — it processes up to 10 un-imported variants and
+ * returns progress so the client can poll-loop to completion.
  */
 
 interface DiagnosticData {
@@ -24,6 +20,7 @@ interface DiagnosticData {
 	hasNextPage?: boolean;
 	totalImageCount?: number;
 	totalVariantCount?: number;
+	alreadyImportedCount?: number;
 	sample?: Array<{
 		id: string;
 		name: string;
@@ -52,16 +49,29 @@ export const load: PageServerLoad = async (event): Promise<DiagnosticData> => {
 		};
 	}
 
+	// Already-imported count comes from D1, regardless of whether SS is up.
+	let alreadyImportedCount = 0;
+	try {
+		const db = getDB(event);
+		const row = await db
+			.prepare(`SELECT COUNT(*) AS n FROM item WHERE squarespace_product_id IS NOT NULL`)
+			.first<{ n: number }>();
+		alreadyImportedCount = row?.n ?? 0;
+	} catch {
+		// platform.env.DB may not be set in vite-dev — silently fall through.
+	}
+
 	try {
 		const page = await listProducts(apiKey);
 		const products = page.products ?? [];
 
-		// Brief, non-destructive summary. Strip HTML from descriptions so
-		// the preview is readable in the dark panel.
 		const sample = products.slice(0, 5).map((p) => {
 			const firstImage = p.images?.[0]?.url ?? null;
 			const firstVariant = p.variants?.[0];
-			const descriptionText = (p.description ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+			const descriptionText = (p.description ?? '')
+				.replace(/<[^>]*>/g, ' ')
+				.replace(/\s+/g, ' ')
+				.trim();
 			return {
 				id: p.id,
 				name: p.name,
@@ -85,6 +95,7 @@ export const load: PageServerLoad = async (event): Promise<DiagnosticData> => {
 			hasNextPage: page.pagination?.hasNextPage ?? false,
 			totalImageCount: products.reduce((n, p) => n + (p.images?.length ?? 0), 0),
 			totalVariantCount: products.reduce((n, p) => n + (p.variants?.length ?? 0), 0),
+			alreadyImportedCount,
 			sample
 		};
 	} catch (err) {
@@ -93,12 +104,19 @@ export const load: PageServerLoad = async (event): Promise<DiagnosticData> => {
 				status: 'api_error',
 				httpStatus: err.httpStatus,
 				message: err.message,
-				body: err.body.slice(0, 2000)
+				body: err.body.slice(0, 2000),
+				alreadyImportedCount
 			};
 		}
 		return {
 			status: 'network_error',
-			message: err instanceof Error ? err.message : String(err)
+			message: err instanceof Error ? err.message : String(err),
+			alreadyImportedCount
 		};
 	}
 };
+
+// The actual batch processing lives at /api/import/squarespace/batch
+// as a plain JSON endpoint — the page polls it in a loop. Returning
+// JSON from a real endpoint is much easier on the client than parsing
+// SvelteKit's devalue-encoded action results.

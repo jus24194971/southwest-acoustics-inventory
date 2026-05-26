@@ -1,7 +1,65 @@
 <script lang="ts">
 	import type { PageData } from './$types';
+	import type { BatchResult, ImportError } from '$lib/server/squarespace_import';
 
 	let { data }: { data: PageData } = $props();
+
+	// Local state for the polling loop. Each batch returned by the
+	// /api/import/squarespace/batch endpoint is appended to `log` so the
+	// user sees progress accumulate. Aggregate totals roll up across
+	// batches for the headline counters.
+	type LogEntry =
+		| { kind: 'batch'; result: BatchResult }
+		| { kind: 'error'; message: string }
+		| { kind: 'done'; total: number };
+
+	let running = $state(false);
+	let log = $state<LogEntry[]>([]);
+	let aggregate = $state({
+		created: 0,
+		updated: 0,
+		photos: 0,
+		errors: [] as ImportError[]
+	});
+
+	async function startImport() {
+		running = true;
+		log = [];
+		aggregate = { created: 0, updated: 0, photos: 0, errors: [] };
+
+		try {
+			while (true) {
+				const res = await fetch('/api/import/squarespace/batch', { method: 'POST' });
+
+				if (!res.ok) {
+					const text = await res.text();
+					log = [
+						...log,
+						{ kind: 'error', message: `Server returned ${res.status}: ${text.slice(0, 200)}` }
+					];
+					break;
+				}
+
+				const payload = (await res.json()) as { ok: boolean; batch: BatchResult };
+				const batch = payload.batch;
+
+				log = [...log, { kind: 'batch', result: batch }];
+				aggregate.created += batch.itemsCreated;
+				aggregate.updated += batch.itemsUpdated;
+				aggregate.photos += batch.photosUploaded;
+				aggregate.errors = [...aggregate.errors, ...batch.errors];
+
+				if (!batch.hasMore) {
+					log = [...log, { kind: 'done', total: batch.totalImportedSoFar }];
+					break;
+				}
+			}
+		} catch (err) {
+			log = [...log, { kind: 'error', message: err instanceof Error ? err.message : String(err) }];
+		} finally {
+			running = false;
+		}
+	}
 </script>
 
 <section class="space-y-6">
@@ -9,16 +67,13 @@
 		<p class="eyebrow">Bootstrap</p>
 		<h1 class="headline text-3xl">Squarespace product import</h1>
 		<p class="text-sm text-[color:var(--color-ink-3)]">
-			Diagnostic: confirm we can reach Dad's Squarespace store. Reads the first page of products
-			and reports what came back. Nothing is written to inventory yet.
+			Pulls Dad's existing Squarespace catalog into inventory as the seed dataset. Idempotent —
+			re-running updates titles, descriptions, and prices but never duplicates.
 		</p>
 	</header>
 
 	{#if data.status === 'no_key'}
-		<div
-			class="panel border-[color:var(--color-rust)] px-6 py-5"
-			style="border-color: var(--color-rust)"
-		>
+		<div class="panel px-6 py-5" style="border-color: var(--color-rust)">
 			<p class="headline text-xl text-[color:var(--color-rust-bright)]">No API key configured.</p>
 			<p class="mt-2 text-sm text-[color:var(--color-ink-2)]">{data.message}</p>
 		</div>
@@ -33,14 +88,14 @@
 			</p>
 			{#if data.httpStatus === 401 || data.httpStatus === 403}
 				<p class="mt-3 text-xs italic text-[color:var(--color-ink-3)]">
-					Likely cause: the API key is missing the <span class="font-mono">Products</span>
-					read scope, or it's pointed at the wrong Squarespace site. Regenerate the key in Squarespace
-					→ Settings → Developer Tools → API Keys with all read scopes selected.
+					Likely cause: API key missing the <span class="font-mono">Products</span> scope, or
+					pointed at the wrong site. Regenerate in Squarespace → Settings → Developer Tools → API
+					Keys with all read scopes.
 				</p>
 			{/if}
 			{#if data.body}
 				<pre
-					class="mt-4 overflow-x-auto rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-input)] p-3 text-xs text-[color:var(--color-ink-2)]">{data.body}</pre>
+					class="mt-4 overflow-x-auto rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-input)] p-3 text-xs">{data.body}</pre>
 			{/if}
 		</div>
 	{:else if data.status === 'network_error'}
@@ -51,41 +106,139 @@
 			<p class="mt-2 text-sm text-[color:var(--color-ink-2)]">{data.message}</p>
 		</div>
 	{:else if data.status === 'ok'}
-		<!-- =========================================
-		     Summary tile — we have a working pipe.
-		     ========================================= -->
+		<!-- ============= Connection summary ============= -->
 		<div class="panel px-6 py-5" style="border-color: var(--color-moss)">
 			<p class="headline text-xl text-[color:var(--color-moss-bright)]">Connected.</p>
-			<div class="mt-3 grid grid-cols-3 gap-4 text-sm">
+			<div class="mt-3 grid grid-cols-4 gap-4 text-sm">
 				<div>
-					<span class="eyebrow">Products on page 1</span>
+					<span class="eyebrow">Products page 1</span>
 					<p class="headline mt-1 text-2xl">{data.sampleCount}</p>
 				</div>
 				<div>
-					<span class="eyebrow">Images on page 1</span>
+					<span class="eyebrow">Images page 1</span>
 					<p class="headline mt-1 text-2xl">{data.totalImageCount}</p>
 				</div>
 				<div>
-					<span class="eyebrow">Variants on page 1</span>
+					<span class="eyebrow">Variants page 1</span>
 					<p class="headline mt-1 text-2xl">{data.totalVariantCount}</p>
+				</div>
+				<div>
+					<span class="eyebrow">Already imported</span>
+					<p class="headline mt-1 text-2xl text-[color:var(--color-gold-bright)]">
+						{data.alreadyImportedCount}
+					</p>
 				</div>
 			</div>
 			<p class="mt-3 text-xs italic text-[color:var(--color-ink-3)]">
-				Has additional pages: <span class="font-mono"
-					>{data.hasNextPage ? 'yes' : 'no'}</span
-				>
-				{data.hasNextPage ? '— the full import will paginate through them.' : ''}
+				Has additional pages: <span class="font-mono">{data.hasNextPage ? 'yes' : 'no'}</span>
 			</p>
 		</div>
 
-		<!-- =========================================
-		     Sample products — first five.
-		     ========================================= -->
+		<!-- ============= Import controls + log ============= -->
+		<div class="panel px-6 py-5">
+			<div class="flex items-center gap-3">
+				<button class="btn-primary" onclick={startImport} disabled={running}>
+					{#if running}
+						Importing…
+					{:else if (data.alreadyImportedCount ?? 0) > 0}
+						Continue / refresh import
+					{:else}
+						Start import
+					{/if}
+				</button>
+				{#if running}
+					<span class="eyebrow text-[color:var(--color-gold-bright)]"
+						>in progress · do not close tab</span
+					>
+				{/if}
+			</div>
+
+			<p class="mt-3 text-xs italic text-[color:var(--color-ink-3)]">
+				Processes ~10 variants per server call and continues automatically until done. Each call
+				downloads photos to R2 — that's the slow part.
+			</p>
+
+			{#if log.length > 0 || aggregate.created > 0 || aggregate.updated > 0}
+				<div class="mt-5 space-y-3">
+					<!-- Aggregate counters -->
+					<div class="grid grid-cols-3 gap-4 text-sm">
+						<div>
+							<span class="eyebrow">Created</span>
+							<p class="headline mt-1 text-2xl text-[color:var(--color-moss-bright)]">
+								{aggregate.created}
+							</p>
+						</div>
+						<div>
+							<span class="eyebrow">Updated</span>
+							<p class="headline mt-1 text-2xl text-[color:var(--color-gold-bright)]">
+								{aggregate.updated}
+							</p>
+						</div>
+						<div>
+							<span class="eyebrow">Photos uploaded</span>
+							<p class="headline mt-1 text-2xl">{aggregate.photos}</p>
+						</div>
+					</div>
+
+					<!-- Scrolling log -->
+					<div
+						class="max-h-72 overflow-y-auto rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-input)] p-3 font-mono text-xs"
+					>
+						{#each log as entry, i (i)}
+							{#if entry.kind === 'batch'}
+								<div class="text-[color:var(--color-ink-2)]">
+									batch · created
+									<span class="text-[color:var(--color-moss-bright)]"
+										>{entry.result.itemsCreated}</span
+									>
+									· updated
+									<span class="text-[color:var(--color-gold-bright)]"
+										>{entry.result.itemsUpdated}</span
+									>
+									· photos
+									<span class="text-[color:var(--color-ink)]">{entry.result.photosUploaded}</span>
+									{#if entry.result.errors.length > 0}
+										·
+										<span class="text-[color:var(--color-rust-bright)]"
+											>{entry.result.errors.length} err</span
+										>
+									{/if}
+								</div>
+							{:else if entry.kind === 'error'}
+								<div class="text-[color:var(--color-rust-bright)]">! {entry.message}</div>
+							{:else if entry.kind === 'done'}
+								<div class="mt-2 text-[color:var(--color-moss-bright)]">
+									✓ done · {entry.total} items now tracked from Squarespace
+								</div>
+							{/if}
+						{/each}
+					</div>
+
+					{#if aggregate.errors.length > 0}
+						<details class="text-xs">
+							<summary
+								class="cursor-pointer text-[color:var(--color-rust-bright)] hover:text-[color:var(--color-rust)]"
+							>
+								{aggregate.errors.length} error{aggregate.errors.length === 1 ? '' : 's'} (click
+								to expand)
+							</summary>
+							<ul class="mt-2 space-y-1 pl-4">
+								{#each aggregate.errors as e (e.context)}
+									<li class="text-[color:var(--color-ink-3)]">
+										<span class="font-mono text-[color:var(--color-ink-4)]">{e.context}</span>
+										— {e.error}
+									</li>
+								{/each}
+							</ul>
+						</details>
+					{/if}
+				</div>
+			{/if}
+		</div>
+
+		<!-- ============= Sample products ============= -->
 		<div class="space-y-1">
 			<p class="eyebrow">First 5 products as Squarespace sees them</p>
-			<p class="text-xs text-[color:var(--color-ink-4)]">
-				This is what the importer will translate into inventory items.
-			</p>
 		</div>
 
 		<div class="space-y-3">
@@ -119,12 +272,7 @@
 						{#if p.descriptionPreview}
 							<p class="text-xs text-[color:var(--color-ink-2)]">
 								{p.descriptionPreview}{p.descriptionLength > 180 ? '…' : ''}
-								<span class="ml-1 italic text-[color:var(--color-ink-4)]">
-									({p.descriptionLength} chars)
-								</span>
 							</p>
-						{:else}
-							<p class="text-xs italic text-[color:var(--color-ink-4)]">no description</p>
 						{/if}
 
 						<div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
@@ -139,20 +287,22 @@
 							{#if p.firstVariantSku}
 								<span>
 									<span class="eyebrow">First SKU:</span>
-									<span class="ml-1 font-mono text-[color:var(--color-gold)]">
-										{p.firstVariantSku}
-									</span>
+									<span class="ml-1 font-mono text-[color:var(--color-gold)]"
+										>{p.firstVariantSku}</span
+									>
 								</span>
 							{/if}
 							<span>
 								<span class="eyebrow">Price:</span>
-								<span class="ml-1 font-mono text-[color:var(--color-ink)]">{p.firstVariantPrice}</span>
+								<span class="ml-1 font-mono text-[color:var(--color-ink)]"
+									>{p.firstVariantPrice}</span
+								>
 							</span>
 						</div>
 
 						{#if p.tags.length > 0}
 							<div class="flex flex-wrap gap-1">
-								{#each p.tags as t}
+								{#each p.tags as t (t)}
 									<span class="pill text-[10px]">{t}</span>
 								{/each}
 							</div>
@@ -160,16 +310,6 @@
 					</div>
 				</div>
 			{/each}
-		</div>
-
-		<div class="panel space-y-2 px-6 py-5">
-			<p class="headline text-lg">What's next</p>
-			<p class="text-sm text-[color:var(--color-ink-2)]">
-				If this all looks right, give me a thumbs-up and I'll build the actual importer that
-				writes each variant into an inventory <span class="font-mono">item</span> row, downloads
-				images to R2, and records <span class="font-mono">squarespace_product_id</span> for the
-				eventual round-trip sync.
-			</p>
 		</div>
 	{/if}
 </section>
