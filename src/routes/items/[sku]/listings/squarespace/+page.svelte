@@ -211,6 +211,98 @@
 	// stomp the user's edits.
 	let listingTitle = $state(initial.title);
 
+	// ----------------------------------------------------------------
+	// Title character counter
+	// ----------------------------------------------------------------
+	// Squarespace doesn't enforce a strict title length but storefront
+	// product cards truncate around 60–80 chars. Counter shows the
+	// number and color-codes:
+	//   - 0 to TITLE_GOOD_MAX: green (good)
+	//   - up to TITLE_WARN_MAX: gold (long but acceptable)
+	//   - over TITLE_WARN_MAX: red (likely to truncate)
+	const TITLE_GOOD_MAX = 80;
+	const TITLE_WARN_MAX = 120;
+	let titleLength = $derived(listingTitle.length);
+	let titleCounterColor = $derived(
+		titleLength <= TITLE_GOOD_MAX
+			? 'var(--color-moss-bright)'
+			: titleLength <= TITLE_WARN_MAX
+				? 'var(--color-gold-bright)'
+				: 'var(--color-rust-bright)'
+	);
+
+	// ----------------------------------------------------------------
+	// Tags state + AI suggester
+	// ----------------------------------------------------------------
+	// Converted from a one-time `value=initial.tags` to bound state so
+	// the AI suggester can append to it programmatically.
+	let listingTags = $state(initial.tags);
+
+	let tagAiBusy = $state(false);
+	let tagAiError = $state<string | null>(null);
+	let tagSuggestions = $state<string[]>([]);
+
+	function currentTagList(): string[] {
+		return listingTags
+			.split(',')
+			.map((t) => t.trim().toLowerCase())
+			.filter((t) => t.length > 0);
+	}
+
+	// Editor has setHtml() but no getHtml() — grab the rendered HTML
+	// from the hidden input the RichTextEditor maintains so AI calls
+	// see the current draft, not just the initial server value.
+	function getEditorHtml(): string {
+		const hidden = document.querySelector<HTMLInputElement>(
+			'input[name="listing_description_html"]'
+		);
+		return hidden?.value ?? initial.description;
+	}
+
+	async function suggestTagsFromAi() {
+		tagAiBusy = true;
+		tagAiError = null;
+		tagSuggestions = [];
+		try {
+			// Send the IN-PROGRESS title + tags + description from the
+			// editor so suggestions reflect what Dad is actually drafting,
+			// not whatever's stored on the DB.
+			const descriptionHtml = getEditorHtml();
+			const res = await fetch(`/api/listings/${data.item.id}/squarespace/suggest-tags`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					title: listingTitle,
+					descriptionHtml,
+					existingTags: currentTagList()
+				})
+			});
+			if (!res.ok) {
+				const text = await res.text();
+				tagAiError = `${res.status}: ${text.slice(0, 200)}`;
+				return;
+			}
+			const payload = (await res.json()) as { tags: string[] };
+			tagSuggestions = payload.tags;
+		} catch (err) {
+			tagAiError = err instanceof Error ? err.message : String(err);
+		} finally {
+			tagAiBusy = false;
+		}
+	}
+
+	function addTag(tag: string) {
+		const cur = currentTagList();
+		if (cur.includes(tag)) return;
+		listingTags = cur.length === 0 ? tag : `${listingTags.trim()}${listingTags.trim().endsWith(',') ? '' : ','} ${tag}`;
+		// Remove from suggestions pool so the user can see what's left.
+		tagSuggestions = tagSuggestions.filter((t) => t !== tag);
+	}
+
+	function addAllSuggestedTags() {
+		for (const tag of tagSuggestions) addTag(tag);
+	}
+
 	const STATUS_PILL: Record<string, string> = {
 		draft: 'pill',
 		ready: 'pill-warn',
@@ -300,7 +392,21 @@
 	<!-- ============= Listing form ============= -->
 	<form method="POST" class="panel space-y-5 px-6 py-6">
 		<div class="space-y-1.5">
-			<label for="listing_title" class="eyebrow block">Listing title</label>
+			<div class="flex items-baseline justify-between gap-3">
+				<label for="listing_title" class="eyebrow block">Listing title</label>
+				<span
+					class="font-mono text-[10px]"
+					style:color={titleCounterColor}
+					title="Storefront cards truncate around 80 chars. Hard breakage around 120."
+				>
+					{titleLength} chars
+					{#if titleLength > TITLE_WARN_MAX}
+						· too long
+					{:else if titleLength > TITLE_GOOD_MAX}
+						· long
+					{/if}
+				</span>
+			</div>
 			<input
 				id="listing_title"
 				name="listing_title"
@@ -310,7 +416,8 @@
 				placeholder={data.item.title}
 			/>
 			<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
-				Defaults to the item's title. Often longer / more keyword-heavy on Squarespace.
+				Defaults to the item's title. Often longer / more keyword-heavy on Squarespace. Aim for
+				under 80 chars so storefront cards don't truncate.
 			</p>
 		</div>
 
@@ -372,17 +479,65 @@
 		</div>
 
 		<div class="space-y-1.5">
-			<label for="listing_tags" class="eyebrow block">
-				Tags <span class="lowercase text-[color:var(--color-ink-4)]">(comma-separated)</span>
-			</label>
+			<div class="flex items-baseline justify-between gap-3">
+				<label for="listing_tags" class="eyebrow block">
+					Tags <span class="lowercase text-[color:var(--color-ink-4)]">(comma-separated)</span>
+				</label>
+				<button
+					type="button"
+					class="btn-ghost px-2 py-1 text-[11px]"
+					onclick={suggestTagsFromAi}
+					disabled={tagAiBusy || !data.hasAiKey}
+					title={data.hasAiKey
+						? 'Read the description and suggest searchable tags'
+						: 'ANTHROPIC_API_KEY not configured'}
+				>
+					{tagAiBusy ? 'Reading…' : '✨ Suggest tags from description'}
+				</button>
+			</div>
 			<input
 				id="listing_tags"
 				name="listing_tags"
 				type="text"
-				value={initial.tags}
+				bind:value={listingTags}
 				placeholder="telecaster, custom, hardware"
 				class="field"
 			/>
+
+			{#if tagAiError}
+				<p class="text-xs text-[color:var(--color-rust-bright)]">{tagAiError}</p>
+			{/if}
+
+			{#if tagSuggestions.length > 0}
+				<div
+					class="rounded border border-[color:var(--color-gold-dim)] bg-[color:var(--color-input)] px-3 py-2"
+				>
+					<div class="flex items-baseline justify-between gap-2">
+						<p class="text-[11px] text-[color:var(--color-gold-bright)]">
+							✨ Suggested by AI · click to add
+						</p>
+						<button
+							type="button"
+							class="text-[10px] text-[color:var(--color-gold-bright)] hover:underline"
+							onclick={addAllSuggestedTags}
+						>
+							Add all
+						</button>
+					</div>
+					<div class="mt-2 flex flex-wrap gap-1.5">
+						{#each tagSuggestions as tag (tag)}
+							<button
+								type="button"
+								class="rounded-full border border-[color:var(--color-line)] bg-[color:var(--color-panel-2)] px-2.5 py-1 font-mono text-[11px] text-[color:var(--color-ink-2)] transition-colors hover:border-[color:var(--color-gold)] hover:bg-[color:var(--color-hover)] hover:text-[color:var(--color-ink)]"
+								onclick={() => addTag(tag)}
+								title="Add this tag to the listing"
+							>
+								+ {tag}
+							</button>
+						{/each}
+					</div>
+				</div>
+			{/if}
 		</div>
 
 		<!-- ============= Storefront categories ============= -->
