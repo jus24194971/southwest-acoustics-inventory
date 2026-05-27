@@ -119,6 +119,17 @@
 	);
 	let editStockQty = $state(untrack(() => data.item.stock_qty));
 
+	// Adjust-quantity UI state. Sidebar panel for stocked items —
+	// collapsed by default, opens with current qty pre-filled so Dad
+	// just types over it.
+	let showingAdjust = $state(false);
+	let adjustNewQty = $state(0);
+	$effect(() => {
+		// Re-sync when the page data changes (after a successful adjust
+		// redirect, stock_qty has moved).
+		adjustNewQty = data.item.stock_qty;
+	});
+
 	// Recategorize: while the edit form is open the user can pick a
 	// different category. The form-local categoryId drives the
 	// attribute slots' labels/contexts (independently from the saved
@@ -443,6 +454,106 @@
 					</div>
 				</div>
 			</div>
+
+			<!-- ON-HAND ADJUSTMENT (stocked only) ----------------- -->
+			{#if data.item.tracking_mode === 'stocked' && !data.item.retired_at}
+				<div class="panel px-4 py-3">
+					<div class="flex items-baseline justify-between">
+						<p class="eyebrow">On hand</p>
+						{#if !showingAdjust}
+							<button
+								type="button"
+								class="text-[10px] text-[color:var(--color-gold-bright)] hover:underline"
+								onclick={() => {
+									adjustNewQty = data.item.stock_qty;
+									showingAdjust = true;
+								}}
+							>
+								Adjust
+							</button>
+						{/if}
+					</div>
+
+					{#if !showingAdjust}
+						<p class="font-mono text-2xl text-[color:var(--color-ink)]">
+							{data.item.stock_qty}
+						</p>
+						<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
+							Off-platform sale, miscount, or breakage — click Adjust to fix.
+						</p>
+					{:else}
+						<form method="POST" action="?/adjustQty" class="space-y-2">
+							{#if form?.adjustError}
+								<p class="text-xs text-[color:var(--color-rust-bright)]">
+									{form.adjustError}
+								</p>
+							{/if}
+
+							<div class="space-y-1">
+								<p class="text-[11px] text-[color:var(--color-ink-3)]">
+									Currently <span class="font-mono">{data.item.stock_qty}</span>
+								</p>
+								<label for="new_qty" class="eyebrow block text-[10px]">New quantity</label>
+								<div class="flex gap-1.5">
+									<input
+										id="new_qty"
+										name="new_qty"
+										type="number"
+										min="0"
+										required
+										bind:value={adjustNewQty}
+										class="field py-1 text-sm"
+									/>
+									<button
+										type="button"
+										class="btn-ghost px-2 py-1 text-xs"
+										title="Set to zero"
+										onclick={() => (adjustNewQty = 0)}
+									>
+										0
+									</button>
+								</div>
+							</div>
+
+							<div class="space-y-1">
+								<label for="reason" class="eyebrow block text-[10px]">Reason</label>
+								<select id="reason" name="reason" required class="field py-1 text-xs">
+									<option value="">— pick one —</option>
+									<option value="sold_external">Sold off-platform (eBay / cash / etc.)</option>
+									<option value="count_correction">Count correction</option>
+									<option value="damaged">Damaged / discarded</option>
+									<option value="found_extra">Found extra</option>
+									<option value="other">Other</option>
+								</select>
+							</div>
+
+							<div class="space-y-1">
+								<label for="adjust_note" class="eyebrow block text-[10px]">Note (optional)</label>
+								<input
+									id="adjust_note"
+									name="note"
+									type="text"
+									placeholder="Order #, buyer, where it went…"
+									class="field py-1 text-xs"
+								/>
+							</div>
+
+							<div class="flex gap-2 pt-1">
+								<button type="submit" class="btn-primary px-3 py-1.5 text-xs">
+									Save adjustment
+								</button>
+								<button
+									type="button"
+									class="btn-ghost px-3 py-1.5 text-xs"
+									onclick={() => (showingAdjust = false)}
+								>
+									Cancel
+								</button>
+							</div>
+						</form>
+					{/if}
+				</div>
+			{/if}
 
 			<!-- CATEGORY ------------------------------------------ -->
 			<div class="panel px-4 py-3">

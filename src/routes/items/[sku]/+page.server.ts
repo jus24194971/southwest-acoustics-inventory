@@ -578,6 +578,104 @@ export const actions: Actions = {
 	},
 
 	// ============================================================
+	// Quantity adjustment (stocked items)
+	// ============================================================
+	//
+	// Stocked items drift — eBay sells a thing we forgot to mark out,
+	// a friend grabs a part off the bench, we miscounted on receive,
+	// etc. This action lets Dad correct the on-hand qty + leave an
+	// audit row explaining why.
+	//
+	// Reasons map to movement kinds:
+	//   sold_external   → 'sale'    (sold off-platform, not via SS push)
+	//   damaged         → 'scrap'   (broken / discarded)
+	//   count_correction, found_extra, other → 'adjust'
+	//
+	// The movement.quantity stores the absolute delta; the note records
+	// the before/after numbers so the ledger reads "Adjusted 7 → 4".
+
+	adjustQty: async (event) => {
+		const db = getDB(event);
+		const item = await loadItemBySku(db, event.params.sku);
+		if (!item) throw error(404);
+
+		if (item.tracking_mode !== 'stocked') {
+			return fail(400, {
+				adjustError: 'Quantity adjustment is for stocked items. Use Retire for serialized items.'
+			});
+		}
+		if (item.retired_at) {
+			return fail(400, { adjustError: 'Retired items can\'t have their qty adjusted. Unretire first.' });
+		}
+
+		const form = await event.request.formData();
+		const newQtyRaw = form.get('new_qty')?.toString();
+		const reason = (form.get('reason') ?? '').toString();
+		const note = form.get('note')?.toString().trim() || null;
+
+		if (!newQtyRaw) {
+			return fail(400, { adjustError: 'New quantity is required.' });
+		}
+		const newQty = parseInt(newQtyRaw, 10);
+		if (!Number.isInteger(newQty) || newQty < 0) {
+			return fail(400, { adjustError: 'Quantity must be a non-negative integer.' });
+		}
+		if (newQty === item.stock_qty) {
+			return fail(400, { adjustError: `Already at ${newQty}. Nothing to adjust.` });
+		}
+
+		const allowedReasons = ['sold_external', 'damaged', 'count_correction', 'found_extra', 'other'];
+		if (!allowedReasons.includes(reason)) {
+			return fail(400, { adjustError: 'Pick a reason for the adjustment.' });
+		}
+
+		// Reason → movement kind.
+		const kind =
+			reason === 'sold_external' ? 'sale' : reason === 'damaged' ? 'scrap' : 'adjust';
+
+		const delta = newQty - item.stock_qty;
+		const direction = delta > 0 ? 'up' : 'down';
+		const reasonLabel: Record<string, string> = {
+			sold_external: 'Sold off-platform',
+			damaged: 'Damaged / discarded',
+			count_correction: 'Count correction',
+			found_extra: 'Found extra',
+			other: 'Other'
+		};
+		const baseNote = `${reasonLabel[reason]}: ${item.stock_qty} → ${newQty} (${direction} ${Math.abs(delta)})`;
+		const finalNote = note ? `${baseNote} · ${note}` : baseNote;
+
+		// For sale/scrap movements we record the from_bin so the audit
+		// trail shows where the stock came out of. Pure 'adjust' has no
+		// physical move — leave bins null.
+		const fromBinId = kind === 'sale' || kind === 'scrap' ? item.current_bin_id : null;
+
+		await db.batch([
+			db
+				.prepare(
+					`INSERT INTO movement (item_id, kind, from_bin_id, quantity, note, actor)
+					 VALUES (?, ?, ?, ?, ?, ?)`
+				)
+				.bind(
+					item.id,
+					kind,
+					fromBinId,
+					Math.abs(delta),
+					finalNote,
+					event.locals?.userEmail ?? 'system'
+				),
+
+			db
+				.prepare(
+					`UPDATE item SET stock_qty = ?, updated_at = datetime('now') WHERE id = ?`
+				)
+				.bind(newQty, item.id)
+		]);
+
+		throw redirect(303, `/items/${item.sku}`);
+	},
+
+	// ============================================================
 	// Photo management
 	// ============================================================
 	//
