@@ -6,34 +6,53 @@
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
-	// AI suggestion state ----------------------------------------------
+	// ----------------------------------------------------------------
+	// AI listing modal — generates title + description together, with
+	// freeform "make these changes" instructions for iteration.
+	// ----------------------------------------------------------------
+	let aiModalOpen = $state(false);
 	let aiBusy = $state(false);
 	let aiError = $state<string | null>(null);
-	let aiSuggestion = $state<string | null>(null);
+	let aiTitle = $state<string | null>(null);
+	let aiDescription = $state<string | null>(null);
+	let aiInstructions = $state('');
 	let aiUsage = $state<{ input: number; output: number } | null>(null);
+	// Total cost over the lifetime of this modal session — handy when
+	// iterating to know roughly what each refinement costs.
+	let aiTotalIn = $state(0);
+	let aiTotalOut = $state(0);
 
-	// We bind to the editor so we can call its setHtml() when Dad
+	// Bind to the rich-text editor so we can call setHtml() when Dad
 	// accepts an AI suggestion — bypasses round-tripping through the
 	// hidden input.
 	let editorRef: { setHtml(html: string): void } | undefined = $state();
 
-	async function suggestDescription() {
+	async function callSuggest(refining: boolean) {
 		aiBusy = true;
 		aiError = null;
-		aiSuggestion = null;
-		aiUsage = null;
 		try {
+			const payload: Record<string, string> = {};
+			const instructions = aiInstructions.trim();
+			if (instructions) payload.instructions = instructions;
+			if (refining && aiTitle) payload.currentTitle = aiTitle;
+			if (refining && aiDescription) payload.currentDescriptionHtml = aiDescription;
+
 			const res = await fetch(
-				`/api/listings/${data.item.id}/squarespace/suggest-description`,
-				{ method: 'POST' }
+				`/api/listings/${data.item.id}/squarespace/suggest-listing`,
+				{
+					method: 'POST',
+					headers: Object.keys(payload).length > 0 ? { 'content-type': 'application/json' } : {},
+					body: Object.keys(payload).length > 0 ? JSON.stringify(payload) : undefined
+				}
 			);
 			if (!res.ok) {
 				const text = await res.text();
 				aiError = `${res.status}: ${text.slice(0, 250)}`;
 				return;
 			}
-			const payload = (await res.json()) as {
-				html: string;
+			const data2 = (await res.json()) as {
+				title: string;
+				descriptionHtml: string;
 				usage: {
 					input_tokens: number;
 					output_tokens: number;
@@ -41,11 +60,17 @@
 					cache_read_input_tokens: number;
 				};
 			};
-			aiSuggestion = payload.html;
-			aiUsage = {
-				input: payload.usage.input_tokens + payload.usage.cache_read_input_tokens,
-				output: payload.usage.output_tokens
-			};
+			aiTitle = data2.title;
+			aiDescription = data2.descriptionHtml;
+			const inT = data2.usage.input_tokens + data2.usage.cache_read_input_tokens;
+			const outT = data2.usage.output_tokens;
+			aiUsage = { input: inT, output: outT };
+			aiTotalIn += inT;
+			aiTotalOut += outT;
+			// Clear instructions box on success so the next refinement
+			// starts blank — leaves the user's intent visible in the
+			// preview itself rather than in a pre-filled textarea.
+			aiInstructions = '';
 		} catch (err) {
 			aiError = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -53,18 +78,45 @@
 		}
 	}
 
-	function useSuggestion() {
-		if (!aiSuggestion) return;
-		editorRef?.setHtml(aiSuggestion);
-		aiSuggestion = null;
+	function openAiModal() {
+		aiModalOpen = true;
+		aiBusy = false;
+		aiError = null;
+		aiTitle = null;
+		aiDescription = null;
+		aiInstructions = '';
 		aiUsage = null;
+		aiTotalIn = 0;
+		aiTotalOut = 0;
+		// Kick off the initial generation immediately on open.
+		void callSuggest(false);
 	}
 
-	function dismissSuggestion() {
-		aiSuggestion = null;
-		aiError = null;
-		aiUsage = null;
+	function closeAiModal() {
+		aiModalOpen = false;
 	}
+
+	function applyAi() {
+		if (!aiTitle || !aiDescription) return;
+		listingTitle = aiTitle;
+		editorRef?.setHtml(aiDescription);
+		aiModalOpen = false;
+	}
+
+	// Esc-to-close + lock body scroll while the modal is up.
+	$effect(() => {
+		if (!aiModalOpen) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape' && !aiBusy) closeAiModal();
+		};
+		document.addEventListener('keydown', onKey);
+		const prevOverflow = document.body.style.overflow;
+		document.body.style.overflow = 'hidden';
+		return () => {
+			document.removeEventListener('keydown', onKey);
+			document.body.style.overflow = prevOverflow;
+		};
+	});
 
 	// Parse the JSON tag array back into a comma-separated string for the
 	// tag input. Tagging UI is a basic comma-separated field for now —
@@ -101,6 +153,10 @@
 	}));
 
 	let visible = $state(initial.visible);
+	// Bound to the listing title input so the AI modal can write into
+	// it. Initialised once via untrack so subsequent data reloads don't
+	// stomp the user's edits.
+	let listingTitle = $state(initial.title);
 
 	const STATUS_PILL: Record<string, string> = {
 		draft: 'pill',
@@ -196,7 +252,7 @@
 				id="listing_title"
 				name="listing_title"
 				type="text"
-				value={initial.title}
+				bind:value={listingTitle}
 				class="field"
 				placeholder={data.item.title}
 			/>
@@ -211,13 +267,13 @@
 				<button
 					type="button"
 					class="btn-ghost px-2 py-1 text-[11px]"
-					onclick={suggestDescription}
-					disabled={aiBusy || !data.hasAiKey}
+					onclick={openAiModal}
+					disabled={!data.hasAiKey}
 					title={data.hasAiKey
-						? 'Generate a draft from this item with Claude Haiku'
+						? 'Open the AI listing generator — title + description with refinement'
 						: 'ANTHROPIC_API_KEY not configured'}
 				>
-					{aiBusy ? 'Drafting…' : '✨ Suggest with AI'}
+					✨ Suggest with AI
 				</button>
 			</div>
 
@@ -232,54 +288,6 @@
 				Customer-facing description. Bold, italic, headings, lists, and links — the toolbar
 				covers the basics. The HTML it produces is what gets sent to Squarespace.
 			</p>
-
-			{#if aiError}
-				<div
-					class="rounded border border-[color:var(--color-rust)] bg-[color:var(--color-input)] px-3 py-2 text-xs text-[color:var(--color-rust-bright)]"
-				>
-					{aiError}
-				</div>
-			{/if}
-
-			{#if aiSuggestion}
-				<div
-					class="rounded border border-[color:var(--color-gold-dim)] bg-[color:var(--color-input)] p-3"
-				>
-					<div class="flex items-baseline justify-between gap-3">
-						<p class="eyebrow text-[color:var(--color-gold-bright)]">
-							AI suggestion · preview
-						</p>
-						{#if aiUsage}
-							<p class="font-mono text-[10px] text-[color:var(--color-ink-4)]">
-								{aiUsage.input} in / {aiUsage.output} out
-							</p>
-						{/if}
-					</div>
-					<div class="description-body mt-2 max-h-72 overflow-y-auto rounded bg-[color:var(--color-shell)] p-3 text-sm">
-						{@html aiSuggestion}
-					</div>
-					<div class="mt-3 flex flex-wrap gap-2">
-						<button type="button" class="btn-primary px-3 py-1.5 text-xs" onclick={useSuggestion}>
-							Use this
-						</button>
-						<button
-							type="button"
-							class="btn-ghost px-3 py-1.5 text-xs"
-							onclick={suggestDescription}
-							disabled={aiBusy}
-						>
-							{aiBusy ? 'Drafting…' : 'Try again'}
-						</button>
-						<button
-							type="button"
-							class="btn-ghost px-3 py-1.5 text-xs"
-							onclick={dismissSuggestion}
-						>
-							Dismiss
-						</button>
-					</div>
-				</div>
-			{/if}
 		</div>
 
 		<div class="grid gap-4 sm:grid-cols-2">
@@ -389,6 +397,194 @@
 			</p>
 		{/if}
 	</form>
+
+	<!-- ============= AI listing generator modal ============= -->
+	{#if aiModalOpen}
+		<!-- Backdrop: dim everything, click-outside closes when idle. -->
+		<div
+			class="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="ai-modal-title"
+			onclick={(e) => {
+				if (e.target === e.currentTarget && !aiBusy) closeAiModal();
+			}}
+			onkeydown={() => {
+				/* handled by document-level listener in $effect */
+			}}
+			tabindex="-1"
+		>
+			<!-- Panel -->
+			<div
+				class="relative flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-[color:var(--color-line-bright)] bg-[color:var(--color-panel)] shadow-2xl"
+			>
+				<!-- Header -->
+				<header
+					class="flex items-baseline justify-between gap-3 border-b border-[color:var(--color-line-dim)] bg-gradient-to-b from-[color:var(--color-panel-2)] to-[color:var(--color-panel)] px-5 py-3"
+				>
+					<div>
+						<p class="eyebrow text-[color:var(--color-gold-bright)]">✨ AI listing generator</p>
+						<h2 id="ai-modal-title" class="headline text-lg">{data.item.title}</h2>
+					</div>
+					<button
+						type="button"
+						class="text-2xl leading-none text-[color:var(--color-ink-3)] transition-colors hover:text-[color:var(--color-ink)]"
+						onclick={closeAiModal}
+						disabled={aiBusy}
+						aria-label="Close"
+					>
+						×
+					</button>
+				</header>
+
+				<!-- Body: preview (left) + controls (right) -->
+				<div class="grid flex-1 overflow-hidden lg:grid-cols-[3fr_2fr]">
+					<!-- Preview -->
+					<div class="flex flex-col gap-4 overflow-y-auto border-b border-[color:var(--color-line-dim)] px-5 py-4 lg:border-b-0 lg:border-r">
+						{#if aiBusy && !aiTitle}
+							<div class="flex flex-1 items-center justify-center text-sm italic text-[color:var(--color-ink-3)]">
+								<span class="inline-flex items-center gap-2">
+									<span
+										class="inline-block h-3 w-3 animate-pulse rounded-full bg-[color:var(--color-gold)]"
+									></span>
+									Drafting…
+								</span>
+							</div>
+						{:else if aiError && !aiTitle}
+							<div
+								class="rounded border border-[color:var(--color-rust)] bg-[color:var(--color-input)] px-3 py-2 text-xs text-[color:var(--color-rust-bright)]"
+							>
+								{aiError}
+							</div>
+						{:else if aiTitle && aiDescription}
+							<div class="space-y-2">
+								<p class="eyebrow">Proposed title</p>
+								<p
+									class="rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-input)] px-3 py-2 text-sm font-medium text-[color:var(--color-ink)]"
+								>
+									{aiTitle}
+								</p>
+							</div>
+							<div class="flex flex-1 flex-col space-y-2 overflow-hidden">
+								<p class="eyebrow">Proposed description (rendered)</p>
+								<div
+									class="description-body flex-1 overflow-y-auto rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-shell)] p-4 text-sm"
+								>
+									{@html aiDescription}
+								</div>
+							</div>
+							<details class="text-[11px] text-[color:var(--color-ink-3)]">
+								<summary class="cursor-pointer hover:text-[color:var(--color-ink-2)]">
+									View raw HTML
+								</summary>
+								<pre class="mt-2 max-h-40 overflow-auto rounded bg-[color:var(--color-input)] p-2 font-mono text-[10px] leading-relaxed text-[color:var(--color-ink-3)] whitespace-pre-wrap break-words">{aiDescription}</pre>
+							</details>
+						{/if}
+					</div>
+
+					<!-- Controls -->
+					<div class="flex flex-col gap-4 overflow-y-auto px-5 py-4">
+						<div class="space-y-2">
+							<label for="ai_instructions" class="eyebrow block">
+								Anything you want changed?
+							</label>
+							<textarea
+								id="ai_instructions"
+								bind:value={aiInstructions}
+								rows="6"
+								placeholder={aiTitle
+									? `e.g. "Shorter title, emphasize the weight"\n"Drop the Free Shipping line"\n"Make the description more technical"\n"Use ROSEWOOD not maple in the specs"`
+									: `Optional. Leave blank for an initial draft, or steer the first take — e.g. "Be brief, mention free shipping".`}
+								class="field text-sm"
+								disabled={aiBusy}
+							></textarea>
+							<p class="text-[11px] italic text-[color:var(--color-ink-4)]">
+								Plain English. Mentions things to keep, change, add, or drop.
+							</p>
+						</div>
+
+						{#if aiTitle && aiError}
+							<div
+								class="rounded border border-[color:var(--color-rust)] bg-[color:var(--color-input)] px-3 py-2 text-xs text-[color:var(--color-rust-bright)]"
+							>
+								{aiError}
+							</div>
+						{/if}
+
+						<div class="space-y-2">
+							{#if aiTitle}
+								<button
+									type="button"
+									class="btn-primary w-full px-3 py-2 text-sm"
+									onclick={() => callSuggest(true)}
+									disabled={aiBusy}
+								>
+									{aiBusy ? 'Drafting…' : '↻ Regenerate with these changes'}
+								</button>
+								<button
+									type="button"
+									class="btn-ghost w-full px-3 py-2 text-xs"
+									onclick={() => callSuggest(false)}
+									disabled={aiBusy}
+									title="Start over from scratch instead of refining"
+								>
+									Start fresh draft
+								</button>
+							{:else}
+								<button
+									type="button"
+									class="btn-primary w-full px-3 py-2 text-sm"
+									onclick={() => callSuggest(false)}
+									disabled={aiBusy}
+								>
+									{aiBusy ? 'Drafting…' : 'Generate'}
+								</button>
+							{/if}
+						</div>
+
+						<!-- Token usage footer (cumulative for this modal session). -->
+						{#if aiUsage}
+							<div
+								class="mt-auto border-t border-[color:var(--color-line-dim)] pt-3 text-[10px] text-[color:var(--color-ink-4)]"
+							>
+								<p class="font-mono">
+									last call: {aiUsage.input} in / {aiUsage.output} out
+								</p>
+								{#if aiTotalIn !== aiUsage.input || aiTotalOut !== aiUsage.output}
+									<p class="font-mono">
+										session: {aiTotalIn} in / {aiTotalOut} out
+									</p>
+								{/if}
+								<p class="italic">Claude Haiku 4.5 · ~$1/M in, ~$5/M out</p>
+							</div>
+						{/if}
+					</div>
+				</div>
+
+				<!-- Footer: Apply / Cancel -->
+				<footer
+					class="flex flex-wrap items-center gap-2 border-t border-[color:var(--color-line-dim)] bg-gradient-to-b from-[color:var(--color-panel)] to-[color:var(--color-panel-2)] px-5 py-3"
+				>
+					<button
+						type="button"
+						class="btn-ghost px-4 py-2 text-sm"
+						onclick={closeAiModal}
+						disabled={aiBusy}
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						class="btn-primary ml-auto px-4 py-2 text-sm"
+						onclick={applyAi}
+						disabled={aiBusy || !aiTitle || !aiDescription}
+					>
+						Use these — title + description
+					</button>
+				</footer>
+			</div>
+		</div>
+	{/if}
 
 	<!-- ============= Sync state details ============= -->
 	{#if data.listing}
