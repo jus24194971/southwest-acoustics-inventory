@@ -269,22 +269,33 @@ export async function updateProduct(
 }
 
 /**
- * Upload a single product image as multipart/form-data. SS processes
- * images asynchronously — the endpoint typically returns 202 Accepted
- * with an image-upload reference; the actual image becomes available
- * on the product a few seconds later once their pipeline finishes.
+ * Upload a single product image as multipart/form-data.
  *
- * Docs: https://developers.squarespace.com/commerce-apis/upload-a-product-image
+ * IMPORTANT: this endpoint lives on Squarespace's v2 API (not the
+ * 1.0 API the rest of this module uses) and the path is plural
+ * (`/images`). The 1.0/.../image (singular) endpoint exists too —
+ * but it accepts application/json for metadata updates, not image
+ * binaries. Sending multipart to it returns HTTP 415:
+ *   "Content-Type header value must be application/json"
+ * Burned that hour finding out. v2 + plural is the binary endpoint.
  *
- * The Products API doesn't accept image URLs in the product payload
- * (Reverb does, Squarespace doesn't), and our R2 photos live behind
- * Cloudflare Access so even if it did, SS couldn't fetch them. So
- * pushing photos is necessarily a binary upload per photo.
+ * Docs:
+ *   POST https://api.squarespace.com/v2/commerce/products/{id}/images
+ *   Returns 202 Accepted with `{ imageId: string }`. Image processes
+ *   asynchronously; status checkable at
+ *   GET /v2/commerce/products/{id}/images/{imageId}/status
+ *
+ * The Products API also doesn't accept image URLs in the product
+ * payload (Reverb does, Squarespace doesn't). Even if it did, our
+ * R2 photos live behind Cloudflare Access so SS couldn't fetch
+ * them. So binary multipart per photo is the only path.
  *
  * Each call is one Workers subrequest. Free-tier Workers cap at 50
  * subrequests per invocation, so the caller should keep the photo
  * batch comfortably under that.
  */
+const V2_BASE_URL = 'https://api.squarespace.com/v2';
+
 export async function uploadProductImage(
 	apiKey: string,
 	productId: string,
@@ -292,7 +303,7 @@ export async function uploadProductImage(
 	contentType: string,
 	filename: string
 ): Promise<{ imageId?: string; status?: string }> {
-	const url = `${BASE_URL}/commerce/products/${encodeURIComponent(productId)}/image`;
+	const url = `${V2_BASE_URL}/commerce/products/${encodeURIComponent(productId)}/images`;
 
 	const form = new FormData();
 	form.append('file', new Blob([imageBytes], { type: contentType }), filename);
@@ -311,7 +322,7 @@ export async function uploadProductImage(
 	const body = await res.text();
 	if (!res.ok) throw new SquarespaceError(res.status, body);
 
-	// SS returns JSON on 202 Accepted with an upload reference. Some
+	// SS returns JSON on 202 Accepted with `{ imageId: "..." }`. Some
 	// images may return an empty body — defensive parse.
 	try {
 		return JSON.parse(body) as { imageId?: string; status?: string };
