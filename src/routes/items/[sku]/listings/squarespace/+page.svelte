@@ -371,8 +371,18 @@
 			</p>
 			{#if page.url.searchParams.get('photo_warn')}
 				<p class="mt-1 text-xs text-[color:var(--color-gold-bright)]">
-					⚠ {page.url.searchParams.get('photo_warn')}. See the "Last sync" notes below for details.
+					⚠ {page.url.searchParams.get('photo_warn')}
 				</p>
+				{#if data.listing?.last_sync_error}
+					<details class="mt-2 text-[11px] text-[color:var(--color-ink-3)]">
+						<summary class="cursor-pointer hover:text-[color:var(--color-ink-2)]">
+							Why? · Squarespace response
+						</summary>
+						<pre
+							class="mt-2 max-h-48 overflow-auto rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-input)] p-2 font-mono text-[10px] leading-relaxed whitespace-pre-wrap break-words"
+							>{data.listing.last_sync_error}</pre>
+					</details>
+				{/if}
 			{/if}
 			{#if data.listing?.external_id}
 				<p class="mt-1 font-mono text-xs text-[color:var(--color-ink-3)]">

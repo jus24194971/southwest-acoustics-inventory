@@ -366,11 +366,16 @@ export const actions: Actions = {
 			};
 		}
 
-		// Map the picked category slugs to their actual SS category
-		// display names. These get sent in the (undocumented but
-		// functional) `categories` field on the product payload. The
-		// slug versions are still in tags[] as a fallback.
-		const categoryNames = categoryNamesFromSlugs(parsed.categories);
+		// Tried sending the picked SS category names in a `categories`
+		// field on the product payload — SS responded with HTTP 400.
+		// So the field is not just undocumented, it's explicitly
+		// rejected. Categories must be assigned in SS admin manually
+		// (or via the CSV import that's a separate workflow we'll
+		// build later). For now, the slug-tag fallback is all we send;
+		// it still drives sub-shop URL filtering on tag-based templates.
+		// `categoryNames` is still computed for future use (CSV export
+		// or a future SS API surface) — unused on push.
+		void categoryNamesFromSlugs(parsed.categories);
 
 		const payload: SquarespaceProductWritePayload = {
 			type: 'PHYSICAL',
@@ -378,7 +383,6 @@ export const actions: Actions = {
 			description: finalDesc,
 			urlSlug: finalSlug,
 			tags: effectiveTags,
-			categories: categoryNames.length > 0 ? categoryNames : undefined,
 			isVisible: parsed.visible === 1,
 			variants: [variantPayload]
 		};
@@ -504,6 +508,7 @@ export const actions: Actions = {
 
 				if (r2 && photoRows.results.length > 0) {
 					for (const photo of photoRows.results) {
+						let byteLen = -1;
 						try {
 							const obj = await r2.get(photo.r2_key);
 							if (!obj) {
@@ -511,6 +516,7 @@ export const actions: Actions = {
 								continue;
 							}
 							const bytes = await obj.arrayBuffer();
+							byteLen = bytes.byteLength;
 							const ct =
 								photo.content_type ??
 								obj.httpMetadata?.contentType ??
@@ -520,11 +526,23 @@ export const actions: Actions = {
 							await uploadProductImage(apiKey, result.id, bytes, ct, filename);
 							photosUploaded++;
 						} catch (err) {
-							const msg = err instanceof SquarespaceError
-								? `HTTP ${err.httpStatus}: ${err.body.slice(0, 120)}`
-								: err instanceof Error
-									? err.message
-									: String(err);
+							// Full response captured (up to 400 chars) so we
+							// can see SS's exact error message. Logs to
+							// Cloudflare's worker console too so checking
+							// `wrangler tail` shows the same.
+							const msg =
+								err instanceof SquarespaceError
+									? `HTTP ${err.httpStatus}: ${err.body.slice(0, 400)}`
+									: err instanceof Error
+										? err.message
+										: String(err);
+							console.error('SS photo upload failed', {
+								r2_key: photo.r2_key,
+								productId: result.id,
+								contentType: photo.content_type ?? 'image/jpeg',
+								byteLength: byteLen,
+								error: msg
+							});
 							photoUploadErrors.push(`${photo.r2_key}: ${msg}`);
 						}
 					}
@@ -642,6 +660,7 @@ export const actions: Actions = {
 		const errors: string[] = [];
 		let uploaded = 0;
 		for (const photo of photoRows.results) {
+			let byteLen = -1;
 			try {
 				const obj = await r2.get(photo.r2_key);
 				if (!obj) {
@@ -649,6 +668,7 @@ export const actions: Actions = {
 					continue;
 				}
 				const bytes = await obj.arrayBuffer();
+				byteLen = bytes.byteLength;
 				const ct = photo.content_type ?? obj.httpMetadata?.contentType ?? 'image/jpeg';
 				const filename = photo.r2_key.split('/').pop() ?? 'photo.jpg';
 				await uploadProductImage(apiKey, listing.external_id, bytes, ct, filename);
@@ -656,10 +676,17 @@ export const actions: Actions = {
 			} catch (err) {
 				const msg =
 					err instanceof SquarespaceError
-						? `HTTP ${err.httpStatus}: ${err.body.slice(0, 120)}`
+						? `HTTP ${err.httpStatus}: ${err.body.slice(0, 400)}`
 						: err instanceof Error
 							? err.message
 							: String(err);
+				console.error('SS photo re-push failed', {
+					r2_key: photo.r2_key,
+					productId: listing.external_id,
+					contentType: photo.content_type ?? 'image/jpeg',
+					byteLength: byteLen,
+					error: msg
+				});
 				errors.push(`${photo.r2_key}: ${msg}`);
 			}
 		}
