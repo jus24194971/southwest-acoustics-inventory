@@ -393,6 +393,50 @@
 				Photos take a few seconds to appear — Squarespace processes them asynchronously after
 				upload.
 			</p>
+
+			<!-- Manual-step reminder. Squarespace's public Commerce API
+				 doesn't expose category or fulfillment-profile assignment
+				 (we probed the surface in /settings/squarespace-scope and
+				 only the documented fields come back). So Dad still has
+				 to do these two things in SS admin per product. We
+				 surface the deep-links here so the click cost is minimal.
+
+				 Skipped on the photo-only repush since the product
+				 already existed and these would already be set. -->
+			{#if page.url.searchParams.get('photo_action') !== 'repush' && data.listing?.external_id}
+				<div
+					class="mt-3 rounded border border-[color:var(--color-gold-dim)] bg-[color:var(--color-input)] px-3 py-2"
+				>
+					<p class="text-[11px] font-semibold text-[color:var(--color-gold-bright)]">
+						⚠ Don't forget — set in Squarespace admin:
+					</p>
+					<ul class="mt-1.5 space-y-1 text-[11px] text-[color:var(--color-ink-2)]">
+						<li>
+							<strong class="text-[color:var(--color-ink)]">Categories</strong> — which
+							sub-shop pages this product appears on (Leo Jaymz Guitars, Special Value
+							Guitars, etc.)
+						</li>
+						<li>
+							<strong class="text-[color:var(--color-ink)]">Fulfillment Profile</strong> —
+							which shipping option set (Flat Rate Electric Guitar, Free Shipping, etc.)
+						</li>
+					</ul>
+					<p class="mt-2 text-[11px]">
+						<a
+							href="https://www.southwestacousticproducts.com/config/commerce/inventory/{data.listing.external_id}"
+							target="_blank"
+							rel="noopener"
+							class="text-[color:var(--color-gold-bright)] underline"
+						>
+							Open this product in Squarespace admin ↗
+						</a>
+					</p>
+					<p class="mt-1 text-[10px] italic text-[color:var(--color-ink-4)]">
+						These two fields aren't exposed by the SS public API — only the admin UI can
+						set them. Once set on the SS side, they survive future re-pushes from here.
+					</p>
+				</div>
+			{/if}
 		</div>
 	{/if}
 
