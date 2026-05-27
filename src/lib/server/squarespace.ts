@@ -52,6 +52,10 @@ export interface SquarespaceProduct {
 	storePageId: string;
 	name: string;
 	description: string; // HTML
+	/** Full publicly-fetchable storefront URL including Dad's custom
+	 *  domain — e.g. https://www.southwestacousticproducts.com/shop/p/...
+	 *  SS populates this for any product on a published store page. */
+	url?: string;
 	urlSlug: string;
 	tags: string[];
 	isVisible: boolean;

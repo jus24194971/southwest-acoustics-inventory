@@ -554,12 +554,23 @@ export const actions: Actions = {
 			// failures get separately surfaced via the redirect param
 			// so the listing isn't marked "error" just because one
 			// photo failed.
+			// External URL: prefer SS's own `url` field (which carries
+			// Dad's custom domain like southwestacousticproducts.com),
+			// fall back to constructing from the slug + hardcoded
+			// storefront domain if SS didn't include it. The old code
+			// did a hostname.replace() against squarespace.com which
+			// was just plain wrong — Dad's storefront lives on his own
+			// domain, not the SS one.
+			const finalExternalUrl =
+				result.url ??
+				(result.urlSlug
+					? `https://www.southwestacousticproducts.com/${result.urlSlug.replace(/^\/+/, '')}`
+					: null);
+
 			await recordSyncResult(db, item.id, 'squarespace', {
 				externalId: result.id,
 				externalVariantId: firstVariant?.id ?? null,
-				externalUrl: result.urlSlug
-					? `https://${new URL(event.url).hostname.replace('sw-acoustics-inventory.pages.dev', 'squarespace.com')}/${result.urlSlug}`
-					: null,
+				externalUrl: finalExternalUrl,
 				status: parsed.visible === 1 ? 'live' : 'paused',
 				syncStatus: 'ok',
 				syncError:
