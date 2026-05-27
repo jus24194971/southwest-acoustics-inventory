@@ -347,9 +347,13 @@
 	{:else if pushedJustNow}
 		<div class="panel px-4 py-3" style="border-color: var(--color-moss)">
 			<p class="text-sm text-[color:var(--color-moss-bright)]">
-				Pushed to Squarespace successfully.
-				{#if page.url.searchParams.get('photos')}
-					{page.url.searchParams.get('photos')} photo(s) uploaded.
+				{#if page.url.searchParams.get('photo_action') === 'repush'}
+					{page.url.searchParams.get('photos') ?? 0} photo(s) uploaded to existing Squarespace listing.
+				{:else}
+					Pushed to Squarespace successfully.
+					{#if page.url.searchParams.get('photos')}
+						{page.url.searchParams.get('photos')} photo(s) uploaded.
+					{/if}
 				{/if}
 			</p>
 			{#if page.url.searchParams.get('photo_warn')}
@@ -774,6 +778,47 @@
 			</p>
 		{/if}
 	</form>
+
+	<!-- ============= Re-push photos (existing listings only) ============= -->
+	<!--
+		Standalone form so it doesn't submit the main listing form's
+		fields — re-push only needs the route + the SKU. Appears only
+		when the listing has an external_id (already on Squarespace);
+		new listings handle photos through the main Push button.
+	-->
+	{#if data.listing?.external_id}
+		<form
+			method="POST"
+			action="?/repushPhotos"
+			class="panel space-y-3 px-6 py-4"
+			onsubmit={(e) => {
+				if (
+					!confirm(
+						'Upload all current photos to the existing Squarespace product. ' +
+							'If photos are already there, Squarespace will add these as DUPLICATES — you ' +
+							'would need to clean them up in your Squarespace admin. Continue?'
+					)
+				) {
+					e.preventDefault();
+				}
+			}}
+		>
+			<div class="flex items-baseline justify-between gap-3">
+				<div>
+					<p class="eyebrow">Re-push photos</p>
+					<p class="mt-1 text-[11px] italic text-[color:var(--color-ink-3)]">
+						Fixes listings that landed without photos. Uploads every current inventory photo
+						to the existing Squarespace product. <strong class="not-italic text-[color:var(--color-gold-bright)]"
+							>Watch for duplicates</strong
+						> — Squarespace doesn't deduplicate, so this is best used when SS shows zero photos.
+					</p>
+				</div>
+				<button type="submit" class="btn-ghost px-4 py-2 text-sm" disabled={!data.hasApiKey}>
+					↻ Re-push photos
+				</button>
+			</div>
+		</form>
+	{/if}
 
 	<!-- ============= AI listing generator modal ============= -->
 	{#if aiModalOpen}

@@ -503,5 +503,113 @@ export const actions: Actions = {
 			});
 			return fail(500, { pushError: message });
 		}
+	},
+
+	// ============================================================
+	// Re-push photos to an existing SS listing
+	// ============================================================
+	//
+	// Use case: the listing was pushed before photo support was wired,
+	// or photos were added in the inventory app after the initial push,
+	// or some photos failed during the create step and need a retry.
+	// This action targets the existing SS product (by external_id) and
+	// uploads every current R2 photo via the multipart endpoint.
+	//
+	// Caveat: SS doesn't deduplicate. If photos are already on the SS
+	// product, this run will add them again. The UI warns Dad about
+	// that — for the missing-photos recovery case it's exactly what's
+	// wanted; for a full refresh he'd want to delete on SS first.
+
+	repushPhotos: async (event) => {
+		const db = getDB(event);
+		const apiKey = event.platform?.env?.SQUARESPACE_API_KEY;
+		if (!apiKey) return fail(400, { pushError: 'SQUARESPACE_API_KEY not configured.' });
+
+		const item = await db
+			.prepare(`SELECT id, sku FROM item WHERE sku = ? AND deleted_at IS NULL`)
+			.bind(event.params.sku)
+			.first<{ id: number; sku: string }>();
+		if (!item) throw error(404);
+
+		const listing = await loadListing(db, item.id, 'squarespace');
+		if (!listing?.external_id) {
+			return fail(400, {
+				pushError: 'No Squarespace product yet — push the listing first to create it.'
+			});
+		}
+
+		const r2 = event.platform?.env?.PHOTOS;
+		if (!r2) return fail(500, { pushError: 'R2 binding missing.' });
+
+		const photoRows = await db
+			.prepare(
+				`SELECT r2_key, content_type
+				 FROM item_photo
+				 WHERE item_id = ? AND deleted_at IS NULL
+				 ORDER BY position, id
+				 LIMIT 20`
+			)
+			.bind(item.id)
+			.all<{ r2_key: string; content_type: string | null }>();
+
+		if (photoRows.results.length === 0) {
+			return fail(400, {
+				pushError: 'This item has no photos in inventory. Add photos first, then re-push.'
+			});
+		}
+
+		const errors: string[] = [];
+		let uploaded = 0;
+		for (const photo of photoRows.results) {
+			try {
+				const obj = await r2.get(photo.r2_key);
+				if (!obj) {
+					errors.push(`${photo.r2_key}: not in R2`);
+					continue;
+				}
+				const bytes = await obj.arrayBuffer();
+				const ct = photo.content_type ?? obj.httpMetadata?.contentType ?? 'image/jpeg';
+				const filename = photo.r2_key.split('/').pop() ?? 'photo.jpg';
+				await uploadProductImage(apiKey, listing.external_id, bytes, ct, filename);
+				uploaded++;
+			} catch (err) {
+				const msg =
+					err instanceof SquarespaceError
+						? `HTTP ${err.httpStatus}: ${err.body.slice(0, 120)}`
+						: err instanceof Error
+							? err.message
+							: String(err);
+				errors.push(`${photo.r2_key}: ${msg}`);
+			}
+		}
+
+		// Surface a sync note about the photo refresh — listing status
+		// stays live (the product itself is fine; this is a side action).
+		if (errors.length > 0) {
+			await recordSyncResult(db, item.id, 'squarespace', {
+				status: listing.status,
+				syncStatus: 'ok',
+				syncError: `Photo re-push: ${uploaded} uploaded, ${errors.length} failed: ${errors.slice(0, 3).join('; ')}`
+			});
+		} else if (uploaded > 0) {
+			await recordSyncResult(db, item.id, 'squarespace', {
+				status: listing.status,
+				syncStatus: 'ok',
+				syncError: null
+			});
+		}
+
+		const params = new URLSearchParams({
+			pushed: '1',
+			photos: String(uploaded),
+			photo_action: 'repush'
+		});
+		if (errors.length > 0) {
+			params.set(
+				'photo_warn',
+				`${errors.length} of ${uploaded + errors.length} photos failed to upload`
+			);
+		}
+		throw redirect(303, `/items/${event.params.sku}/listings/squarespace?${params.toString()}`);
 	}
 };
