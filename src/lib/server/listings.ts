@@ -24,6 +24,18 @@ export interface MarketplaceListing {
 	listing_price_cents: number | null;
 	listing_visible: number;
 	storefront_id: string | null;
+	// Squarespace's "sub-shops" (Leo Jaymz, Parts, etc.) are tag-driven
+	// since SS's Products API doesn't expose categories. We collect
+	// chosen category slugs here, then merge them into listing_tags
+	// at push time so the product lands on the right sub-shop URL.
+	listing_categories_json: string | null; // JSON array of slugs
+	// 0/1 — when 1, "free-shipping" tag is appended on push so Dad's
+	// SS free-shipping rule kicks in.
+	listing_free_shipping: number;
+	// Optional shipping weight in ounces — pushed as the variant's
+	// shippingMeasurements.weight so SS's weight-based rate rules
+	// can calculate at checkout.
+	listing_weight_oz: number | null;
 	platform_extras_json: string | null;
 	external_id: string | null;
 	external_variant_id: string | null;
@@ -67,6 +79,9 @@ export interface UpsertFields {
 	listing_visible: number;
 	storefront_id: string | null;
 	status: ListingStatus;
+	listing_categories_json: string | null;
+	listing_free_shipping: number;
+	listing_weight_oz: number | null;
 }
 
 /** Upsert the listing's local-only content fields. Doesn't touch the
@@ -84,9 +99,11 @@ export async function upsertListingContent(
 				item_id, platform,
 				listing_title, listing_description_html, listing_url_slug,
 				listing_tags_json, listing_price_cents, listing_visible,
-				storefront_id, status, updated_at
+				storefront_id, status,
+				listing_categories_json, listing_free_shipping, listing_weight_oz,
+				updated_at
 			)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 			 ON CONFLICT (item_id, platform) DO UPDATE SET
 				listing_title = excluded.listing_title,
 				listing_description_html = excluded.listing_description_html,
@@ -96,6 +113,9 @@ export async function upsertListingContent(
 				listing_visible = excluded.listing_visible,
 				storefront_id = excluded.storefront_id,
 				status = excluded.status,
+				listing_categories_json = excluded.listing_categories_json,
+				listing_free_shipping = excluded.listing_free_shipping,
+				listing_weight_oz = excluded.listing_weight_oz,
 				updated_at = datetime('now')`
 		)
 		.bind(
@@ -108,7 +128,10 @@ export async function upsertListingContent(
 			fields.listing_price_cents,
 			fields.listing_visible,
 			fields.storefront_id,
-			fields.status
+			fields.status,
+			fields.listing_categories_json,
+			fields.listing_free_shipping,
+			fields.listing_weight_oz
 		)
 		.run();
 }

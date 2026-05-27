@@ -3,6 +3,7 @@
 	import { untrack } from 'svelte';
 	import type { PageData, ActionData } from './$types';
 	import RichTextEditor from '$lib/components/RichTextEditor.svelte';
+	import { SQUARESPACE_CATEGORIES } from '$lib/squarespace_categories';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
@@ -149,8 +150,29 @@
 					? (data.item.price_cents / 100).toFixed(2)
 					: '',
 		visible: data.listing ? data.listing.listing_visible === 1 : true,
-		storefrontId: data.listing?.storefront_id ?? ''
+		storefrontId: data.listing?.storefront_id ?? '',
+		categories: tagsFromJson(data.listing?.listing_categories_json ?? null)
+			.split(',')
+			.map((s) => s.trim())
+			.filter(Boolean),
+		freeShipping: data.listing ? data.listing.listing_free_shipping === 1 : false,
+		weightOz:
+			data.listing?.listing_weight_oz != null ? String(data.listing.listing_weight_oz) : ''
 	}));
+
+	// Bindable category state — a Set of slugs that's checked in the
+	// multi-select. Reactive so the checkbox list reflects the picked
+	// state and the form submits a "listing_category" entry per slug.
+	let selectedCategories = $state(new Set<string>(initial.categories));
+	let freeShipping = $state(initial.freeShipping);
+
+	function toggleCategory(slug: string) {
+		if (selectedCategories.has(slug)) selectedCategories.delete(slug);
+		else selectedCategories.add(slug);
+		// Trigger reactivity — Svelte 5 doesn't reactively track Set
+		// mutations. Reassign a new Set so derived UI updates.
+		selectedCategories = new Set(selectedCategories);
+	}
 
 	let visible = $state(initial.visible);
 	// Bound to the listing title input so the AI modal can write into
@@ -331,6 +353,107 @@
 				class="field"
 			/>
 		</div>
+
+		<!-- ============= Storefront categories ============= -->
+		<!--
+			Squarespace's "sub-shops" (Leo Jaymz Guitars, Special Value
+			Guitars, Parts and Accessories, etc.) are tag-filtered views
+			of the single Store Page. We add the chosen category slugs to
+			the product's tag list on push so it shows up under the right
+			sub-shop URL. Each chosen category is one form value with
+			name="listing_category" — getAll() reads them on the server.
+		-->
+		<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
+			<legend class="eyebrow px-2">Storefront categories</legend>
+			<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
+				Pick every sub-shop this listing should appear on. The slugs get appended to the
+				product's Squarespace tags so the storefront filtering routes them correctly.
+			</p>
+
+			{#each ['guitars', 'parts', 'special'] as group}
+				<div class="space-y-1">
+					<p
+						class="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--color-gold-dim)]"
+					>
+						{group === 'guitars' ? 'Guitars' : group === 'parts' ? 'Parts & accessories' : 'Cross-cutting'}
+					</p>
+					<div class="grid gap-1.5 sm:grid-cols-2">
+						{#each SQUARESPACE_CATEGORIES.filter((c) => c.group === group) as cat (cat.slug)}
+							<label class="flex items-start gap-2 text-xs">
+								<input
+									type="checkbox"
+									name="listing_category"
+									value={cat.slug}
+									checked={selectedCategories.has(cat.slug)}
+									onchange={() => toggleCategory(cat.slug)}
+									class="mt-0.5 h-3.5 w-3.5 accent-[color:var(--color-gold)]"
+									style="min-height: auto"
+								/>
+								<span class="text-[color:var(--color-ink-2)]">
+									{cat.label}
+									<span class="ml-1 font-mono text-[10px] text-[color:var(--color-ink-4)]"
+										>{cat.slug}</span
+									>
+								</span>
+							</label>
+						{/each}
+					</div>
+				</div>
+			{/each}
+		</fieldset>
+
+		<!-- ============= Shipping ============= -->
+		<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
+			<legend class="eyebrow px-2">Shipping</legend>
+
+			<label class="flex items-start gap-3">
+				<input
+					type="checkbox"
+					name="listing_free_shipping"
+					bind:checked={freeShipping}
+					class="mt-0.5 h-4 w-4 accent-[color:var(--color-gold)]"
+					style="min-height: auto"
+				/>
+				<div class="space-y-0.5">
+					<span class="text-sm font-medium text-[color:var(--color-ink)]"
+						>Free shipping on this listing</span
+					>
+					<p class="text-[11px] text-[color:var(--color-ink-3)]">
+						Appends the <span class="font-mono">free-shipping</span> tag on push. You'll need
+						a matching Squarespace shipping rule in your store admin: <em>"Items with
+							free-shipping tag → $0"</em>.
+					</p>
+				</div>
+			</label>
+
+			<div class="space-y-1.5">
+				<label for="listing_weight_oz" class="eyebrow block">
+					Shipping weight (oz) <span class="lowercase">— optional</span>
+				</label>
+				<input
+					id="listing_weight_oz"
+					name="listing_weight_oz"
+					type="number"
+					step="0.1"
+					min="0"
+					value={initial.weightOz}
+					placeholder="e.g. 8 for half a pound"
+					class="field"
+				/>
+				<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
+					Pushed as the variant's shipping weight so Squarespace's weight-based shipping
+					rules can calculate the right rate. Leave blank if you're using free shipping or
+					a flat-rate tag instead.
+				</p>
+			</div>
+
+			<p class="text-[11px] text-[color:var(--color-ink-4)]">
+				For a per-listing flat shipping rate (e.g. <em>"this guitar ships $20"</em>), add a
+				tag like <span class="font-mono">ship-20</span> above and configure a matching
+				shipping rule in Squarespace admin. The SS Products API doesn't expose a direct
+				per-product shipping cost field — tag-driven rules are how it works.
+			</p>
+		</fieldset>
 
 		<div class="space-y-1.5">
 			<label for="storefront_id" class="eyebrow block">Squarespace storefront</label>

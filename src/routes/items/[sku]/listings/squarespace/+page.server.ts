@@ -98,6 +98,9 @@ interface ParsedForm {
 	priceCents: number | null;
 	visible: number;
 	storefrontId: string | null;
+	categories: string[]; // SS sub-shop slugs (tag-driven)
+	freeShipping: number; // 0/1
+	weightOz: number | null;
 }
 
 function parseFormData(form: FormData): ParsedForm {
@@ -113,8 +116,45 @@ function parseFormData(form: FormData): ParsedForm {
 	const priceCents = priceStr ? Math.round(parseFloat(priceStr) * 100) : null;
 	const visible = form.get('listing_visible') === 'on' ? 1 : 0;
 	const storefrontId = (form.get('storefront_id') ?? '').toString().trim() || null;
+	// Categories are submitted as multiple form values named "listing_category"
+	// (one per checked checkbox). getAll preserves order.
+	const categories = form
+		.getAll('listing_category')
+		.map((v) => v.toString().trim())
+		.filter(Boolean);
+	const freeShipping = form.get('listing_free_shipping') === 'on' ? 1 : 0;
+	const weightStr = form.get('listing_weight_oz')?.toString().trim();
+	const weightOz = weightStr ? parseFloat(weightStr) : null;
 
-	return { title, descriptionHtml, urlSlug, tags, priceCents, visible, storefrontId };
+	return {
+		title,
+		descriptionHtml,
+		urlSlug,
+		tags,
+		priceCents,
+		visible,
+		storefrontId,
+		categories,
+		freeShipping,
+		weightOz: Number.isFinite(weightOz) ? weightOz : null
+	};
+}
+
+/**
+ * Merge user-typed tags with category slugs and the optional
+ * free-shipping marker. Categories and free-shipping become tags on
+ * Squarespace since SS doesn't expose them as first-class fields.
+ * Deduplicates so a category that's also in manual tags doesn't
+ * double up.
+ */
+function buildEffectiveTags(
+	manualTags: string[],
+	categories: string[],
+	freeShipping: number
+): string[] {
+	const all = [...manualTags, ...categories];
+	if (freeShipping === 1) all.push('free-shipping');
+	return Array.from(new Set(all.filter((t) => t.length > 0)));
 }
 
 export const actions: Actions = {
@@ -138,7 +178,11 @@ export const actions: Actions = {
 			listing_price_cents: parsed.priceCents,
 			listing_visible: parsed.visible,
 			storefront_id: parsed.storefrontId,
-			status: targetStatus
+			status: targetStatus,
+			listing_categories_json:
+				parsed.categories.length > 0 ? JSON.stringify(parsed.categories) : null,
+			listing_free_shipping: parsed.freeShipping,
+			listing_weight_oz: parsed.weightOz
 		});
 
 		throw redirect(303, `/items/${event.params.sku}/listings/squarespace?saved=1`);
@@ -174,7 +218,11 @@ export const actions: Actions = {
 			listing_price_cents: parsed.priceCents,
 			listing_visible: parsed.visible,
 			storefront_id: parsed.storefrontId,
-			status: 'ready'
+			status: 'ready',
+			listing_categories_json:
+				parsed.categories.length > 0 ? JSON.stringify(parsed.categories) : null,
+			listing_free_shipping: parsed.freeShipping,
+			listing_weight_oz: parsed.weightOz
 		});
 
 		// Compose the SS payload using listing fields with fallback to
@@ -192,22 +240,42 @@ export const actions: Actions = {
 		// — bug that hid out-of-stock listings from the storefront.)
 		const finalQty = item.stock_qty;
 
+		// Tags pushed to SS = user-typed tags + chosen category slugs +
+		// "free-shipping" if checked. The categories drive sub-shop
+		// routing (e.g. "leo-jaymz-guitars" → /shop/leo-jaymz-guitars
+		// page on Dad's storefront) and the free-shipping tag fires
+		// his SS-side shipping rule.
+		const effectiveTags = buildEffectiveTags(
+			parsed.tags,
+			parsed.categories,
+			parsed.freeShipping
+		);
+
+		// Variant shipping measurements — weight only for now. SS uses
+		// it for weight-based rate calculation. Skip the whole block
+		// when no weight is set so we don't push a zero (which would
+		// look like "this is weightless" rather than "we don't know").
+		const variantPayload: SquarespaceProductWritePayload['variants'][number] = {
+			sku: item.sku,
+			pricing: {
+				basePrice: { value: (finalPriceCents / 100).toFixed(2), currency: 'USD' }
+			},
+			stock: { quantity: finalQty, unlimited: false }
+		};
+		if (parsed.weightOz != null && parsed.weightOz > 0) {
+			variantPayload.shippingMeasurements = {
+				weight: { value: parsed.weightOz, unit: 'oz' }
+			};
+		}
+
 		const payload: SquarespaceProductWritePayload = {
 			type: 'PHYSICAL',
 			name: finalName,
 			description: finalDesc,
 			urlSlug: finalSlug,
-			tags: parsed.tags,
+			tags: effectiveTags,
 			isVisible: parsed.visible === 1,
-			variants: [
-				{
-					sku: item.sku,
-					pricing: {
-						basePrice: { value: (finalPriceCents / 100).toFixed(2), currency: 'USD' }
-					},
-					stock: { quantity: finalQty, unlimited: false }
-				}
-			]
+			variants: [variantPayload]
 		};
 
 		// New product needs storePageId; updates re-use whatever's there

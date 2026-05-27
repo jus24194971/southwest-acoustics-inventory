@@ -199,6 +199,19 @@ export interface SquarespaceProductWritePayload {
 		};
 		stock?: { quantity: number; unlimited: boolean };
 		attributes?: Record<string, string>;
+		// Per the Products API: weight + dimensions live on the
+		// variant under shippingMeasurements. SS uses these for any
+		// weight-based shipping rules on Dad's store. Omit when we
+		// don't have it — SS treats it as "no specific weight".
+		shippingMeasurements?: {
+			weight?: { value: number; unit: 'oz' | 'lb' | 'g' | 'kg' };
+			dimensions?: {
+				length: number;
+				width: number;
+				height: number;
+				unit: 'in' | 'cm';
+			};
+		};
 	}>;
 	// Squarespace's documented field is `images` (an array of objects
 	// describing each image). For pushing without re-uploading we omit
