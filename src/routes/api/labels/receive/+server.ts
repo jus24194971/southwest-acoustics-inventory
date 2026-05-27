@@ -262,6 +262,9 @@ export const POST: RequestHandler = async (event) => {
 		headers: {
 			'content-type': 'application/pdf',
 			'content-disposition': 'inline; filename="sw-acoustics-labels.pdf"',
+			// Force fresh fetches — see /api/labels/item for the why.
+			'cache-control': 'no-store, no-cache, must-revalidate',
+			pragma: 'no-cache',
 			// Custom header so the client can read the new SKUs without
 			// re-parsing the PDF — used by the form to clear/redirect.
 			'x-skus-created': createdItems.map((i) => i.sku).join(',')

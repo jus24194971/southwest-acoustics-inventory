@@ -44,7 +44,14 @@ export const GET: RequestHandler = async (event) => {
 	return new Response(new Blob([pdf as unknown as ArrayBuffer], { type: 'application/pdf' }), {
 		headers: {
 			'content-type': 'application/pdf',
-			'content-disposition': `inline; filename="${item.sku}.pdf"`
+			'content-disposition': `inline; filename="${item.sku}.pdf"`,
+			// PDFs default to aggressive browser caching when no Cache-Control
+			// header is present. That bites us every time the renderer
+			// changes — a "reprint" returns the old cached PDF even though
+			// the server would have generated something different. Force
+			// fresh fetches so layout changes show up immediately.
+			'cache-control': 'no-store, no-cache, must-revalidate',
+			pragma: 'no-cache'
 		}
 	});
 };

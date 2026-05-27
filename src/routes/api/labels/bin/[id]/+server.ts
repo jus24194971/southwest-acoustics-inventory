@@ -66,7 +66,11 @@ export const GET: RequestHandler = async (event) => {
 	return new Response(new Blob([pdf as unknown as ArrayBuffer], { type: 'application/pdf' }), {
 		headers: {
 			'content-type': 'application/pdf',
-			'content-disposition': `inline; filename="bin-${bin.code}.pdf"`
+			'content-disposition': `inline; filename="bin-${bin.code}.pdf"`,
+			// Force fresh fetches every time — see /api/labels/item for
+			// the why. Bin labels change less but the principle's the same.
+			'cache-control': 'no-store, no-cache, must-revalidate',
+			pragma: 'no-cache'
 		}
 	});
 };
