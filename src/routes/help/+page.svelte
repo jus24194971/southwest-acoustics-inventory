@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { STYLE_CARDS, VOICE_RULES, type CollectionStyle } from '$lib/squarespace_style_guide';
+
 	// Help content lives as data, not as a forest of templates — adding
 	// a new topic is appending one object to SECTIONS. This mirrors the
 	// pattern in Listing Studio's help.js.
@@ -13,6 +15,99 @@
 		subtitle: string;
 		content: string;
 	}
+
+	// Build the Squarespace style guide HTML from the shared style
+	// module so this page and the AI suggester can never drift apart.
+	// HTML-escape interpolated values defensively — the cards come from
+	// a static module today, but if they ever pull from the DB the
+	// escaping is already wired.
+	function esc(s: string): string {
+		return s
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;');
+	}
+
+	const COLLECTION_ORDER: CollectionStyle[] = [
+		'leo_jaymz',
+		'sw_build',
+		'vintage',
+		'parts_body',
+		'parts_neck',
+		'parts_hardware',
+		'pickups',
+		'strings',
+		'accessory',
+		'default'
+	];
+
+	const styleGuideContent = (() => {
+		const parts: string[] = [];
+
+		parts.push(`<p>Dad's Squarespace shop at
+			<a href="https://www.southwestacousticproducts.com/shop"
+				target="_blank"
+				class="text-[color:var(--color-gold-bright)] hover:underline"
+			>southwestacousticproducts.com/shop</a>
+			has a fixed set of conventions for titles and descriptions. The AI description
+			suggester already knows them — use this page when you're writing copy by hand
+			and want to match.</p>`);
+
+		// Voice rules ---------------------------------------------------
+		parts.push('<p><strong>Voice (applies to every listing):</strong></p>');
+		parts.push('<ul>');
+		for (const r of VOICE_RULES) parts.push(`<li>${esc(r)}</li>`);
+		parts.push('</ul>');
+
+		// Per-collection cards -----------------------------------------
+		parts.push('<p><strong>Per-collection conventions:</strong></p>');
+		for (const key of COLLECTION_ORDER) {
+			const c = STYLE_CARDS[key];
+			parts.push(
+				`<div style="border-left: 3px solid var(--color-gold-dim); padding-left: 0.75rem; margin: 1rem 0;">`
+			);
+			parts.push(`<p><strong>${esc(c.displayName)}</strong>`);
+			if (c.collectionUrlSlug) {
+				parts.push(
+					` <span class="font-mono text-xs" style="color: var(--color-ink-3)">${esc(c.collectionUrlSlug)}</span>`
+				);
+			}
+			parts.push('</p>');
+
+			parts.push(
+				`<p style="margin-top: 0.25rem;">Title pattern:
+				<span class="font-mono text-xs" style="color: var(--color-gold)">${esc(c.titlePattern)}</span></p>`
+			);
+
+			if (c.titleExamples.length > 0) {
+				parts.push('<ul style="margin-top: 0.25rem;">');
+				for (const ex of c.titleExamples) {
+					parts.push(
+						`<li><span class="font-mono text-xs" style="color: var(--color-ink-2)">${esc(ex)}</span></li>`
+					);
+				}
+				parts.push('</ul>');
+			}
+
+			parts.push(
+				`<p style="margin-top: 0.5rem;">
+				<em>Description shape:</em> ${c.descriptionShape === 'structured' ? '<strong>STRUCTURED</strong> — bold headers + bulleted Tech Specs' : '<strong>NARRATIVE</strong> — flowing paragraphs, no headers'}.
+			</p>`
+			);
+
+			parts.push(`<p style="margin-top: 0.25rem; white-space: pre-wrap;">${esc(c.descriptionGuide)}</p>`);
+
+			if (c.closer) {
+				parts.push(
+					`<p style="margin-top: 0.25rem; font-style: italic; color: var(--color-ink-3);">Closer: "${esc(c.closer)}"</p>`
+				);
+			}
+			parts.push('</div>');
+		}
+
+		return parts.join('\n');
+	})();
 
 	const SECTIONS: HelpSection[] = [
 		{
@@ -205,6 +300,13 @@
 				<p>Both settings sync across whichever devices you sign in on, since they're stored
 				server-side rather than per-browser.</p>
 			`
+		},
+		{
+			id: 'squarespace-style',
+			icon: '✍️',
+			title: 'Squarespace style guide',
+			subtitle: 'How titles and descriptions should read on the shop',
+			content: styleGuideContent
 		}
 	];
 

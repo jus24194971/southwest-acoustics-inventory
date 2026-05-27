@@ -2,6 +2,7 @@ import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
 import Anthropic from '@anthropic-ai/sdk';
 import { getDB } from '$lib/server/db';
+import { buildStyleHint, VOICE_RULES } from '$lib/squarespace_style_guide';
 
 /**
  * POST /api/listings/<item_id>/squarespace/suggest-description
@@ -14,28 +15,43 @@ import { getDB } from '$lib/server/db';
  * no document-wrapping elements. The client pastes the result into the
  * rich text editor or appends it to whatever's already there.
  *
+ * Style guide: a per-category hint block from
+ * `$lib/squarespace_style_guide` is appended to every user prompt so
+ * the output matches the conventions on Dad's live shop (Leo Jaymz
+ * structured listings vs. SW Acoustic narrative builds vs. short
+ * parts copy, etc.). Single source of truth for the conventions —
+ * the /help page renders the same data.
+ *
  * The system prompt is marked `cache_control: ephemeral` so when it
  * grows past the ~2K-token cache minimum we'll start getting cache
- * hits on subsequent requests for free. Today it's short enough that
- * caching is a no-op, but the marker is correct future-proofing.
+ * hits on subsequent requests for free.
  */
 
-const SYSTEM_PROMPT = `You are writing customer-facing product descriptions for Southwest Acoustics, a small guitar parts and custom builds shop. The descriptions appear on the shop's Squarespace storefront.
+const SYSTEM_PROMPT = `You are writing customer-facing product descriptions for Southwest Acoustics — a small guitar-parts and custom-builds shop that sells on its Squarespace storefront at southwestacousticproducts.com. Match the voice and structure of the existing listings on that site exactly.
 
-Voice and tone:
-- Friendly, expert, plainspoken — like a knowledgeable luthier talking to a customer at the bench
-- Focus on what the part does, what guitars it fits, what kind of player or build it suits, and why a buyer should care
-- Be specific and concrete about the attributes you're given. Don't invent specs.
-- Avoid hype, marketing fluff, exclamation points, or AI-sounding phrases like "Elevate your sound", "Take your tone to the next level", "Unleash", "Whether you're..."
-- Don't restate the title verbatim in the first sentence
+# Voice rules
 
-Output format:
-- Return PURE HTML only — no markdown, no code fences (no \`\`\`), no preamble, no closing remarks, no explanations
-- Use <p> for paragraphs, <ul><li> for spec lists, <strong> only sparingly for genuinely key terms
-- Aim for 100-200 words total
-- Suggested structure: one hook paragraph (what it is and why it matters), one spec block (the attributes), optional brief use-case paragraph
-- Never include <html>, <head>, <body>, <!DOCTYPE>, or any document-wrapping elements — output only inner body HTML
-- Never wrap the HTML in any kind of quote or backtick — emit the raw markup`;
+${VOICE_RULES.map((r) => `- ${r}`).join('\n')}
+
+# Output format
+
+- Return PURE HTML only — no markdown, no code fences (no \`\`\`), no preamble, no closing remarks, no explanations.
+- Use <p> for paragraphs, <ul><li> for spec lists, <strong> for headers and genuinely key terms, <em> sparingly.
+- For STRUCTURED descriptions (Leo Jaymz collection), use this skeleton:
+    <p>opening hook</p>
+    <p><strong>Sound That Speaks Up</strong></p>
+    <p>...</p>
+    <p><strong>Designed to Play — and Be Seen</strong></p>
+    <p>...</p>
+    <p><strong>Built to Go the Distance</strong></p>
+    <p>...</p>
+    <p><strong>Tech Specs</strong></p>
+    <ul><li><strong>Body & Neck:</strong> ...</li>...</ul>
+    <p>closing one-liner that names the product in <strong>bold</strong></p>
+- For NARRATIVE descriptions (everything else), use 2-4 flowing <p> paragraphs with <strong> only on a few key specs.
+- Aim for 100-200 words for parts/strings/accessories, 150-300 words for guitar bodies/necks, 200-400 words for full guitars.
+- Never include <html>, <head>, <body>, <!DOCTYPE>, or any document-wrapping elements — output only inner body HTML.
+- Never wrap the HTML in any kind of quote or backtick — emit the raw markup.`;
 
 interface ItemRow {
 	id: number;
@@ -158,10 +174,16 @@ export const POST: RequestHandler = async (event) => {
 			? `$${(item.price_cents / 100).toFixed(2)}`
 			: '(no price set)';
 
+	// Per-category style hint — picks the right shape (structured vs.
+	// narrative), title pattern reference, and example titles so the
+	// model's output matches what's already on the live shop.
+	const styleHint = buildStyleHint(item.cat_code);
+
 	const userPrompt =
 		`Generate a Squarespace product description for this item.\n\n` +
+		`# Item\n\n` +
 		`Title: ${item.title}\n` +
-		`Category: ${item.cat_name}\n` +
+		`Category: ${item.cat_name} (${item.cat_code})\n` +
 		(item.brand_name ? `Brand: ${item.brand_name}\n` : '') +
 		(item.model ? `Model code: ${item.model}\n` : '') +
 		`Condition: ${CONDITION_LABEL[item.condition] ?? item.condition}\n` +
@@ -171,7 +193,9 @@ export const POST: RequestHandler = async (event) => {
 		(attrLines.length > 0
 			? `\nAttributes:\n${attrLines.join('\n')}\n`
 			: '\n(No structured attributes set on this item yet.)\n') +
-		`\nWrite the description now. Return only HTML — no other text.`;
+		`\n# Style for this listing\n\n` +
+		styleHint +
+		`\n\nWrite the description now. Match the description-shape and voice for this collection exactly. Return only HTML — no other text.`;
 
 	const anthropic = new Anthropic({ apiKey });
 
