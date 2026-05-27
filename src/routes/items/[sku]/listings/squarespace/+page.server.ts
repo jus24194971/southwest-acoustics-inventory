@@ -210,6 +210,44 @@ function buildEffectiveTags(
 }
 
 /**
+ * Wrap createProduct with a one-shot retry on URL_SLUG_UNAVAILABLE.
+ *
+ * Squarespace reserves slugs for a grace window after a product is
+ * deleted (to keep external links from 404'ing for a while). If
+ * Dad deletes a product manually and then we try to recreate, the
+ * fresh create can 409 with subtype URL_SLUG_UNAVAILABLE — the
+ * exact same Dad just saw.
+ *
+ * On that specific error we mutate the slug by appending the
+ * internal item id (numeric, always unique within our DB), and
+ * retry the create exactly once. Updates payload.urlSlug in place
+ * so the caller can persist the actually-used slug back to
+ * marketplace_listing after.
+ *
+ * Other errors bubble up unchanged.
+ */
+async function createProductWithSlugRetry(
+	apiKey: string,
+	payload: SquarespaceProductWritePayload,
+	fallbackSuffix: string | number
+): Promise<{ result: import('$lib/server/squarespace').SquarespaceProduct; slugWasSuffixed: boolean }> {
+	try {
+		const result = await createProduct(apiKey, payload);
+		return { result, slugWasSuffixed: false };
+	} catch (err) {
+		const slugTaken =
+			err instanceof SquarespaceError &&
+			err.httpStatus === 409 &&
+			err.body.includes('URL_SLUG_UNAVAILABLE');
+		if (!slugTaken) throw err;
+		const base = (payload.urlSlug ?? '').replace(/-+$/g, '');
+		payload.urlSlug = base ? `${base}-${fallbackSuffix}` : String(fallbackSuffix);
+		const result = await createProduct(apiKey, payload);
+		return { result, slugWasSuffixed: true };
+	}
+}
+
+/**
  * Pull the item's internal category code + condition (the keys the
  * learning table uses) and record each picked SS category against
  * them. Called from save() and push() — every confirmed selection
@@ -467,12 +505,24 @@ export const actions: Actions = {
 						.run();
 
 					payload.storePageId = parsed.storefrontId;
-					result = await createProduct(apiKey, payload);
+					// Use the retry helper here too — the recreate path is
+					// the most common trigger for URL_SLUG_UNAVAILABLE
+					// since SS holds the deleted product's slug.
+					const created = await createProductWithSlugRetry(
+						apiKey,
+						payload,
+						item.id
+					);
+					result = created.result;
 					didCreate = true;
 					wasRecreated = true;
 				}
 			} else {
-				result = await createProduct(apiKey, payload);
+				// Fresh create path — same retry wrapper covers any
+				// stray slug collision (e.g., another product on the
+				// site already owns this slug for unrelated reasons).
+				const created = await createProductWithSlugRetry(apiKey, payload, item.id);
+				result = created.result;
 			}
 
 			// ---- Photo upload (new products + recreated only) ---
@@ -571,6 +621,22 @@ export const actions: Actions = {
 				(result.urlSlug
 					? `https://www.southwestacousticproducts.com/shop/${result.urlSlug.replace(/^\/+/, '')}`
 					: null);
+
+			// If the create path suffixed the slug to dodge a URL_SLUG_UNAVAILABLE
+			// 409, the payload.urlSlug we sent is now the canonical one. Update
+			// the local listing copy so the next push uses it directly instead
+			// of re-triggering the same retry. payload.urlSlug is always set at
+			// this point (the input form parser supplies it or defaults).
+			if (payload.urlSlug && payload.urlSlug !== parsed.urlSlug) {
+				await db
+					.prepare(
+						`UPDATE marketplace_listing
+						 SET listing_url_slug = ?, updated_at = datetime('now')
+						 WHERE item_id = ? AND platform = 'squarespace'`
+					)
+					.bind(payload.urlSlug, item.id)
+					.run();
+			}
 
 			await recordSyncResult(db, item.id, 'squarespace', {
 				externalId: result.id,
