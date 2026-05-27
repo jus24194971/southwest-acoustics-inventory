@@ -177,9 +177,15 @@ const SA_GOLD = rgb(0.839, 0.690, 0.455);
 const SA_GOLD_DIM = rgb(0.478, 0.384, 0.220);
 
 /**
- * Draw the SA monogram (italic gold "SA" letters) at the given
- * position and size. Per Dad's call: bare letters, no outlining box
- * and no border ring — they print directly on the white label paper.
+ * Draw the SA monogram in the top-right region: overlapping italic
+ * "S" + "A" in black, no visible border. The bounding box is
+ * "segmented off" logically (the renderer's contentTopMm keeps the
+ * title and SKU below this zone) but never drawn — so the area
+ * reads as clean white space framing a script monogram.
+ *
+ * The two letters render separately at adjusted x positions so the A
+ * tucks slightly into the S, giving the monogram a script ligature
+ * feel without us needing a real ligature glyph.
  *
  * `size` is in PDF points (pt). Use `mm * MM` to convert.
  */
@@ -190,27 +196,42 @@ function drawSaIcon(
 	size: number,
 	fonts: LabelFonts
 ): void {
-	// "SA" letters — italic at the larger sizes (matches the Cambria
-	// Italic look from the Listing Studio icon generator), upright
-	// bold when the label is tiny so the diagonal A stays defined.
-	const useItalic = size >= 22;
+	const ink = rgb(0.05, 0.05, 0.05);
+
+	// Italic at every size that has room — the script feel is the
+	// whole point. Only drop to upright bold on truly tiny labels
+	// where the italic A's diagonal blurs to a triangle.
+	const useItalic = size >= 18;
 	const font = useItalic ? fonts.timesItalicBold : fonts.sansBold;
-	// Without the surrounding panel framing the letters, we can let
-	// them fill more of the logical box than the boxed version did
-	// (was 58% italic / 70% upright with the panel; now ~85% / 90%).
+	// Letters fill most of the logical (invisible) box — without
+	// framing to sit inside, they want to feel substantial.
 	const fontSizePt = useItalic ? size * 0.85 : size * 0.9;
-	const text = 'SA';
-	const textWidth = font.widthOfTextAtSize(text, fontSizePt);
+
+	// Letters drawn separately so the A overlaps the S at ~15% of
+	// the S's width. Gives the monogram a script ligature feel
+	// without needing an actual ligature glyph in the font.
+	const sWidth = font.widthOfTextAtSize('S', fontSizePt);
+	const aWidth = font.widthOfTextAtSize('A', fontSizePt);
+	const overlap = sWidth * 0.15;
+	const monogramWidth = sWidth + aWidth - overlap;
+	const startX = x + (size - monogramWidth) / 2;
 	// Optical centering: cap-height ≈ 0.7 of font size; baseline lands
 	// roughly cap-height below the visual top.
-	const textX = x + (size - textWidth) / 2;
 	const textY = y + (size - fontSizePt * 0.7) / 2;
-	page.drawText(text, {
-		x: textX,
+
+	page.drawText('S', {
+		x: startX,
 		y: textY,
 		size: fontSizePt,
 		font,
-		color: SA_GOLD
+		color: ink
+	});
+	page.drawText('A', {
+		x: startX + sWidth - overlap,
+		y: textY,
+		size: fontSizePt,
+		font,
+		color: ink
 	});
 }
 
@@ -369,7 +390,11 @@ async function renderLabel(
 		const skuBottomMm = padMm;
 		const skuTopMm = skuBottomMm + skuBlockHeightMm + 0.5;
 
-		// --- Title from the top ---
+		// --- Title from the top, horizontally centered ---
+		// Title sits in the "middle" zone between QR and SA box per
+		// Dad's layout. Each wrapped line is x-centered in the content
+		// column rather than left-aligned, giving the label a more
+		// product-card feel.
 		let cursorY = (contentTopMm - titleSize / MM - 0.2) * MM;
 		const maxTitleLines = small ? 2 : 3;
 		const titleLines = wrapLines(
@@ -381,8 +406,10 @@ async function renderLabel(
 		);
 		for (const ln of titleLines) {
 			if (cursorY < skuTopMm * MM + 2) break; // ran into SKU band
+			const lineWidth = fonts.sansBold.widthOfTextAtSize(ln, titleSize);
+			const lineX = contentX + (contentWidthPt - lineWidth) / 2;
 			page.drawText(ln, {
-				x: contentX,
+				x: lineX,
 				y: cursorY,
 				size: titleSize,
 				font: fonts.sansBold,
