@@ -49,18 +49,30 @@
 		return {
 			title: reverbTitle ?? ssTitle ?? data.item.title,
 			description: reverbDesc ?? ssDesc ?? data.item.description_html ?? '',
+			// Price prefill priority:
+			//   1. Existing Reverb listing override (Dad set it before)
+			//   2. Fee-grossed-up base price so the seller nets the
+			//      inventory base after Reverb fees
+			//   3. Item base price as-is (fallback when fees can't be
+			//      computed)
+			//   4. Blank
 			price:
 				reverbPriceCents != null
 					? (reverbPriceCents / 100).toFixed(2)
-					: ssPriceCents != null
-						? (ssPriceCents / 100).toFixed(2)
-						: data.item.price_cents != null
-							? (data.item.price_cents / 100).toFixed(2)
-							: '',
+					: data.suggestedPriceCents != null
+						? (data.suggestedPriceCents / 100).toFixed(2)
+						: ssPriceCents != null
+							? (ssPriceCents / 100).toFixed(2)
+							: data.item.price_cents != null
+								? (data.item.price_cents / 100).toFixed(2)
+								: '',
 			make: extras.reverb_make ?? data.item.brand_name ?? '',
 			model: extras.reverb_model ?? data.item.model ?? '',
 			year: extras.reverb_year ?? String(data.item.year_received),
-			finish: extras.reverb_finish ?? '',
+			// Finish auto-fills from the item's "body finish" / "color"
+			// attribute slot resolved server-side. Dad can still override
+			// per listing, but the default is usually right.
+			finish: extras.reverb_finish ?? data.resolvedFinish ?? '',
 			categoryUuid: extras.reverb_category_uuid ?? '',
 			conditionUuid: extras.reverb_condition_uuid ?? '',
 			shippingAmount: extras.reverb_shipping_amount ?? '',
@@ -446,9 +458,41 @@
 					placeholder="inherits item price"
 					class="field"
 				/>
-				<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
-					Sent to Reverb as the asking price. Leave blank to use the item's internal price.
-				</p>
+				<!-- Fee gross-up explainer: shows the base price, the
+				     auto-calculated listing price, and the breakdown
+				     so Dad can see WHY the suggested price is higher
+				     than the inventory base. He can still override. -->
+				{#if data.item.price_cents != null && data.suggestedPriceCents != null}
+					<div
+						class="rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-input)] px-2.5 py-1.5 text-[11px] leading-snug"
+					>
+						<p class="text-[color:var(--color-ink-2)]">
+							Inventory base:
+							<span class="font-mono text-[color:var(--color-ink)]"
+								>${(data.item.price_cents / 100).toFixed(2)}</span
+							>
+							→ Suggested listing:
+							<span class="font-mono text-[color:var(--color-gold-bright)]"
+								>${(data.suggestedPriceCents / 100).toFixed(2)}</span
+							>
+						</p>
+						<p class="mt-0.5 text-[color:var(--color-ink-3)]">
+							Adds {(data.feeBreakdown.percent * 100).toFixed(2)}% + ${data.feeBreakdown.fixed.toFixed(2)}
+							so Dad nets the inventory base after Reverb's cut.
+							<a
+								href={'https://reverb.com/selling/selling-fees'}
+								target="_blank"
+								rel="noopener"
+								class="text-[color:var(--color-gold-bright)] hover:underline"
+								>Reverb fees ↗</a
+							>
+						</p>
+					</div>
+				{:else}
+					<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
+						Sent to Reverb as the asking price. Leave blank to use the item's internal price.
+					</p>
+				{/if}
 			</div>
 
 			<div class="space-y-1.5">

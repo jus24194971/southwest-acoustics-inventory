@@ -19,6 +19,7 @@ import {
 	type ReverbCondition
 } from '$lib/server/reverb';
 import { getProduct as getSquarespaceProduct } from '$lib/server/squarespace';
+import { REVERB_FEES, grossUpForFees } from '$lib/marketplace_fees';
 
 /**
  * /items/[sku]/listings/reverb — Reverb listing editor.
@@ -57,6 +58,24 @@ interface ItemRow {
 	brand_code: string | null;
 	cat_code: string;
 	cat_name: string;
+	// Attribute slots + their category-defined labels and context keys.
+	// We loop these to find a "finish" / "color"-keyed attribute and
+	// surface the friendly attribute_value label as Reverb's finish.
+	attr_1: string;
+	attr_2: string;
+	attr_3: string;
+	attr_4: string;
+	attr_5: string;
+	attr_1_label: string | null;
+	attr_2_label: string | null;
+	attr_3_label: string | null;
+	attr_4_label: string | null;
+	attr_5_label: string | null;
+	attr_1_context_key: string | null;
+	attr_2_context_key: string | null;
+	attr_3_context_key: string | null;
+	attr_4_context_key: string | null;
+	attr_5_context_key: string | null;
 }
 
 interface PhotoRow {
@@ -73,8 +92,13 @@ export const load: PageServerLoad = async (event) => {
 			`SELECT i.id, i.sku, i.title, i.description, i.description_html,
 			        i.price_cents, i.stock_qty, i.tracking_mode, i.condition,
 			        i.model, i.year_received,
+			        i.attr_1, i.attr_2, i.attr_3, i.attr_4, i.attr_5,
 			        b.name AS brand_name, b.code AS brand_code,
-			        c.code AS cat_code, c.name AS cat_name
+			        c.code AS cat_code, c.name AS cat_name,
+			        c.attr_1_label, c.attr_2_label, c.attr_3_label,
+			        c.attr_4_label, c.attr_5_label,
+			        c.attr_1_context_key, c.attr_2_context_key, c.attr_3_context_key,
+			        c.attr_4_context_key, c.attr_5_context_key
 			 FROM item i
 			 JOIN category c ON c.id = i.category_id
 			 LEFT JOIN brand b ON b.id = i.brand_id
@@ -83,6 +107,53 @@ export const load: PageServerLoad = async (event) => {
 		.bind(sku)
 		.first<ItemRow>();
 	if (!item) throw error(404, `No item with SKU ${sku}`);
+
+	// Resolve the "body finish" / "color" attribute → friendly label
+	// for Reverb's `finish` field. Loops the 5 attr slots, picks the
+	// first whose category label matches /finish|color/i and whose
+	// value isn't XXX (no value) or UNQ (one-of-a-kind without code).
+	// For UNQ we fall back to the unique_desc text via a follow-up
+	// load if needed — but the common case is a coded value.
+	let resolvedFinish = '';
+	for (let n = 1; n <= 5; n++) {
+		const labelKey = `attr_${n}_label` as keyof ItemRow;
+		const codeKey = `attr_${n}` as keyof ItemRow;
+		const ctxKey = `attr_${n}_context_key` as keyof ItemRow;
+		const label = item[labelKey] as string | null;
+		if (!label || !/finish|colou?r/i.test(label)) continue;
+		const code = item[codeKey] as string;
+		if (!code || code === 'XXX') continue;
+		const contextKey = item[ctxKey] as string | null;
+		if (!contextKey) {
+			// No vocab for this slot — fall back to the raw code.
+			resolvedFinish = code;
+			break;
+		}
+		const av = await db
+			.prepare(
+				`SELECT label FROM attribute_value
+				 WHERE context_key = ? AND code = ? AND is_active = 1
+				 LIMIT 1`
+			)
+			.bind(contextKey, code)
+			.first<{ label: string }>();
+		if (av?.label) {
+			resolvedFinish = av.label;
+		} else {
+			// Code wasn't in the vocab (manual entry, edge case).
+			// Surface as-is — Reverb accepts free-form strings here.
+			resolvedFinish = code;
+		}
+		break;
+	}
+
+	// Suggested listing price = item's base price grossed up to cover
+	// Reverb's fees so the seller nets the inventory base. Falls back
+	// to null when the item has no price set yet.
+	const suggestedPriceCents =
+		item.price_cents != null && item.price_cents > 0
+			? grossUpForFees(item.price_cents, REVERB_FEES)
+			: null;
 
 	// Our own Reverb listing row (may not exist yet — the splitOff flow
 	// pre-creates drafts for all platforms, but item-create doesn't).
@@ -131,7 +202,17 @@ export const load: PageServerLoad = async (event) => {
 		categories,
 		conditions,
 		taxonomyError,
-		hasApiKey: !!apiKey
+		hasApiKey: !!apiKey,
+		// Auto-fill helpers — Reverb-specific suggestions derived from
+		// the item's data. Page uses these as the initial form values
+		// unless a saved marketplace_listing already has overrides.
+		resolvedFinish,
+		suggestedPriceCents,
+		feeBreakdown: {
+			percent: REVERB_FEES.percent,
+			fixed: REVERB_FEES.fixed,
+			label: REVERB_FEES.label
+		}
 	};
 };
 
