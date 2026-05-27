@@ -50,6 +50,19 @@ export const GET: RequestHandler = async (event) => {
 		.first<{ code: string; name: string | null; path: string }>();
 	if (!bin) throw error(404, `Bin ${id} not found`);
 
+	// Large-format templates (Primera LX-610) render the brand logo —
+	// fetch it from the bundled asset. Small DYMO templates skip the
+	// subrequest.
+	let logoPng: Uint8Array | undefined;
+	if (template.startsWith('PRIMERA_')) {
+		try {
+			const res = await event.fetch(`${event.url.origin}/southwest_logo.png`);
+			if (res.ok) logoPng = new Uint8Array(await res.arrayBuffer());
+		} catch {
+			// fall through — renderer uses text wordmark
+		}
+	}
+
 	const pdf = await buildLabelsPdf(
 		[
 			{
@@ -60,7 +73,7 @@ export const GET: RequestHandler = async (event) => {
 				url: `${event.url.origin}/bins/${id}`
 			}
 		],
-		{ template, copiesPerLabel: copies }
+		{ template, copiesPerLabel: copies, logoPng }
 	);
 
 	return new Response(new Blob([pdf as unknown as ArrayBuffer], { type: 'application/pdf' }), {

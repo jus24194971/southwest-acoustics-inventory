@@ -243,12 +243,26 @@ export const POST: RequestHandler = async (event) => {
 		kind: 'item',
 		sku: it.sku,
 		title: it.title,
+		description, // shared across the batch — they were received together
 		url: `${event.url.origin}/items/${encodeURIComponent(it.sku)}`
 	}));
 
+	// Only the LX-610 layout uses the logo; skip the subrequest for
+	// every-day DYMO prints.
+	let logoPng: Uint8Array | undefined;
+	if (templateCode.startsWith('PRIMERA_')) {
+		try {
+			const res = await event.fetch(`${event.url.origin}/southwest_logo.png`);
+			if (res.ok) logoPng = new Uint8Array(await res.arrayBuffer());
+		} catch {
+			// fall through — renderer falls back to text wordmark
+		}
+	}
+
 	const pdf = await buildLabelsPdf(labels, {
 		template: templateCode,
-		copiesPerLabel: labelsPerItem
+		copiesPerLabel: labelsPerItem,
+		logoPng
 	});
 
 	// Wrap as Blob so the Response constructor's BodyInit typing accepts

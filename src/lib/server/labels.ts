@@ -65,6 +65,11 @@ export const LABEL_TEMPLATES: Record<string, LabelTemplate> = {
 		widthMm: 88.9,
 		heightMm: 25.4,
 		label: 'DYMO 30320 Address (1" × 3.5")'
+	},
+	PRIMERA_LX610_2x3: {
+		widthMm: 76.2,
+		heightMm: 50.8,
+		label: 'Primera LX-610 Color 2″ × 3″'
 	}
 };
 
@@ -76,6 +81,10 @@ export interface ItemLabel {
 	sku: string;
 	title: string;
 	url: string; // what the QR encodes
+	/** Optional description text — rendered only by the large-format
+	 *  renderer (Primera LX-610 etc.). DYMO labels ignore this. May
+	 *  contain HTML; the renderer strips tags. */
+	description?: string | null;
 }
 
 export interface BinLabel {
@@ -94,6 +103,11 @@ export interface BuildPdfOptions {
 	 *  where Dad might want N identical labels (one per object) or
 	 *  for bins where multiple identical labels are needed. */
 	copiesPerLabel?: number;
+	/** Brand logo PNG bytes. Only used by large-format templates
+	 *  (Primera LX-610). Callers fetch /southwest_logo.png via
+	 *  event.fetch and pass the bytes through. Optional — the
+	 *  renderer falls back to a text wordmark if absent. */
+	logoPng?: Uint8Array;
 }
 
 /**
@@ -107,7 +121,8 @@ export async function buildLabelsPdf(
 	labels: Label[],
 	options: BuildPdfOptions = {}
 ): Promise<Uint8Array> {
-	const template = LABEL_TEMPLATES[options.template ?? DEFAULT_TEMPLATE];
+	const templateCode = options.template ?? DEFAULT_TEMPLATE;
+	const template = LABEL_TEMPLATES[templateCode];
 	const copies = Math.max(1, options.copiesPerLabel ?? 1);
 
 	const widthPt = template.widthMm * MM;
@@ -122,17 +137,48 @@ export async function buildLabelsPdf(
 	const sansFont = await doc.embedFont(StandardFonts.Helvetica);
 	const sansBold = await doc.embedFont(StandardFonts.HelveticaBold);
 	const italic = await doc.embedFont(StandardFonts.HelveticaOblique);
+	const italicBold = await doc.embedFont(StandardFonts.HelveticaBoldOblique);
+
+	// Embed the brand logo once if provided — the same image gets
+	// drawn on every page of a multi-label run, so do the embed cost
+	// upfront and reuse the handle.
+	let logoImage = null;
+	if (options.logoPng && options.logoPng.length > 0) {
+		try {
+			logoImage = await doc.embedPng(options.logoPng);
+		} catch {
+			// Bad bytes — fall back to the text wordmark.
+			logoImage = null;
+		}
+	}
+
+	// Large-format templates get a richer renderer. Threshold of 40mm
+	// is well above any DYMO size but well below the 51mm LX-610 short
+	// edge — if we ever add a mid-size template we'll revisit.
+	const isLargeFormat = template.heightMm >= 40;
 
 	for (const label of labels) {
 		for (let copy = 0; copy < copies; copy++) {
 			const page = doc.addPage([widthPt, heightPt]);
-			await renderLabel(doc, page, label, template, {
-				monoFont,
-				monoBold,
-				sansFont,
-				sansBold,
-				italic
-			});
+			if (isLargeFormat) {
+				await renderLargeFormatLabel(doc, page, label, template, {
+					monoFont,
+					monoBold,
+					sansFont,
+					sansBold,
+					italic,
+					italicBold,
+					logoImage
+				});
+			} else {
+				await renderLabel(doc, page, label, template, {
+					monoFont,
+					monoBold,
+					sansFont,
+					sansBold,
+					italic
+				});
+			}
 		}
 	}
 
@@ -301,6 +347,345 @@ async function renderLabel(
 			});
 		}
 	}
+}
+
+/**
+ * Strip HTML and collapse whitespace. The item description column
+ * may contain HTML (from Squarespace import or the rich-text editor)
+ * — we render plain text on labels.
+ */
+function stripHtml(html: string): string {
+	return html
+		.replace(/<\s*br\s*\/?\s*>/gi, '\n')
+		.replace(/<\/\s*(p|div|li|h[1-6]|tr)\s*>/gi, '\n')
+		.replace(/<[^>]+>/g, '')
+		.replace(/&nbsp;/gi, ' ')
+		.replace(/&amp;/gi, '&')
+		.replace(/&lt;/gi, '<')
+		.replace(/&gt;/gi, '>')
+		.replace(/&quot;/gi, '"')
+		.replace(/&#39;/gi, "'")
+		.replace(/[ \t]+/g, ' ')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
+}
+
+/**
+ * Word-wrap a string into lines that each fit `maxWidthPt` at the
+ * given font/size. Hard breaks (`\n`) in the source are preserved.
+ * Overlong words get char-broken so we don't return a line wider
+ * than the bounds.
+ */
+function wrapLines(
+	text: string,
+	font: PDFFont,
+	sizePt: number,
+	maxWidthPt: number,
+	maxLines: number
+): string[] {
+	const out: string[] = [];
+	const paragraphs = text.split(/\n/);
+	for (const para of paragraphs) {
+		if (out.length >= maxLines) break;
+		const words = para.split(/\s+/).filter(Boolean);
+		let line = '';
+		for (const word of words) {
+			const candidate = line ? line + ' ' + word : word;
+			if (font.widthOfTextAtSize(candidate, sizePt) <= maxWidthPt) {
+				line = candidate;
+			} else {
+				if (line) out.push(line);
+				if (out.length >= maxLines) break;
+				// Word itself overflows — char-break it.
+				if (font.widthOfTextAtSize(word, sizePt) > maxWidthPt) {
+					let chunk = '';
+					for (const ch of word) {
+						if (font.widthOfTextAtSize(chunk + ch, sizePt) <= maxWidthPt) {
+							chunk += ch;
+						} else {
+							out.push(chunk);
+							if (out.length >= maxLines) break;
+							chunk = ch;
+						}
+					}
+					line = chunk;
+				} else {
+					line = word;
+				}
+			}
+		}
+		if (line && out.length < maxLines) out.push(line);
+	}
+
+	// If we ran out of room, ellipsize the last line.
+	if (out.length === maxLines) {
+		const remainder = text
+			.split(/\n/)
+			.join(' ')
+			.split(/\s+/)
+			.filter(Boolean);
+		const renderedWordCount = out.join(' ').split(/\s+/).filter(Boolean).length;
+		if (renderedWordCount < remainder.length) {
+			let last = out[maxLines - 1];
+			while (
+				last.length > 1 &&
+				font.widthOfTextAtSize(last + '…', sizePt) > maxWidthPt
+			) {
+				last = last.slice(0, -1);
+			}
+			out[maxLines - 1] = last + '…';
+		}
+	}
+	return out;
+}
+
+interface LargeFormatFonts extends Fonts {
+	italicBold: PDFFont;
+	logoImage: Awaited<ReturnType<PDFDocument['embedPng']>> | null;
+}
+
+/**
+ * Large-format label renderer — designed around the Primera LX-610's
+ * 2" × 3" color cut, with room for the brand logo, a description
+ * block, and a substantially larger QR than the DYMO renderer.
+ *
+ * Layout (76mm × 51mm, landscape):
+ *
+ *   ┌────────────────────────────────────────────┐
+ *   │  [logo]            Southwest Acoustics     │  ~10mm header
+ *   │  ─────────────────────────────────────     │  gold rule
+ *   │                                            │
+ *   │  ┌──────────┐  CAT-BRAND-MODEL-COND-YY-NN  │
+ *   │  │          │  A1-A2-A3-A4-A5               │
+ *   │  │   QR     │  Item Title (bold)            │
+ *   │  │          │  Description text wraps       │
+ *   │  └──────────┘  across multiple lines…       │
+ *   └────────────────────────────────────────────┘
+ *
+ * For bin labels the right column shifts to bin code (big) + path +
+ * friendly name, mirroring the small-format bin layout.
+ */
+async function renderLargeFormatLabel(
+	doc: PDFDocument,
+	page: PDFPage,
+	label: Label,
+	template: LabelTemplate,
+	fonts: LargeFormatFonts
+): Promise<void> {
+	const widthMm = template.widthMm;
+	const heightMm = template.heightMm;
+	const widthPt = widthMm * MM;
+	const heightPt = heightMm * MM;
+
+	// Gold tones (match the app's --color-gold palette).
+	const goldDim = rgb(0.45, 0.36, 0.18);
+	const goldBright = rgb(0.78, 0.6, 0.27);
+	const ink = rgb(0.05, 0.05, 0.05);
+	const inkSoft = rgb(0.25, 0.25, 0.25);
+
+	// ---- header band: logo + wordmark + rule ---------------------------
+	const headerHeightMm = 11;
+	const padMm = 3;
+	const logoSlotHeightMm = headerHeightMm - 2; // ~9mm — fits comfortably
+
+	let wordmarkX = padMm * MM;
+
+	if (fonts.logoImage) {
+		const img = fonts.logoImage;
+		// Scale logo to fit the header height while preserving aspect.
+		const logoH = logoSlotHeightMm * MM;
+		const logoW = (img.width / img.height) * logoH;
+		page.drawImage(img, {
+			x: padMm * MM,
+			y: (heightMm - headerHeightMm + 1) * MM,
+			width: logoW,
+			height: logoH
+		});
+		wordmarkX = padMm * MM + logoW + 2 * MM;
+	}
+
+	// Italic wordmark — pairs with the logo if present, stands alone if
+	// the logo bytes weren't supplied.
+	page.drawText('Southwest Acoustics', {
+		x: wordmarkX,
+		y: (heightMm - headerHeightMm * 0.62) * MM,
+		size: 11,
+		font: fonts.italicBold,
+		color: goldBright
+	});
+	page.drawText('Shop Floor Inventory', {
+		x: wordmarkX,
+		y: (heightMm - headerHeightMm * 0.92) * MM,
+		size: 6,
+		font: fonts.italic,
+		color: goldDim
+	});
+
+	// Gold rule under the header.
+	page.drawLine({
+		start: { x: padMm * MM, y: (heightMm - headerHeightMm) * MM },
+		end: { x: (widthMm - padMm) * MM, y: (heightMm - headerHeightMm) * MM },
+		thickness: 0.4,
+		color: goldDim
+	});
+
+	// ---- body: QR (left) + content (right) -----------------------------
+	const bodyTopMm = heightMm - headerHeightMm - 1; // 1mm gap below rule
+	const bodyBottomMm = padMm;
+	const bodyHeightMm = bodyTopMm - bodyBottomMm;
+
+	// QR — square, sized to the body height.
+	const qrSizeMm = Math.min(bodyHeightMm, 32);
+	const qrSizePt = qrSizeMm * MM;
+	const qrX = padMm * MM;
+	const qrY = bodyBottomMm * MM;
+
+	const qrPng = await renderQrPng(label.url);
+	const qrImage = await doc.embedPng(qrPng);
+	page.drawImage(qrImage, {
+		x: qrX,
+		y: qrY,
+		width: qrSizePt,
+		height: qrSizePt
+	});
+
+	// Content column — to the right of the QR.
+	const contentX = qrX + qrSizePt + 3 * MM;
+	const contentRight = (widthMm - padMm) * MM;
+	const contentWidthPt = contentRight - contentX;
+
+	// Truncate-to-fit helper for single-line strings.
+	const fitChars = (text: string, font: PDFFont, sizePt: number): string => {
+		const w = font.widthOfTextAtSize(text, sizePt);
+		if (w <= contentWidthPt) return text;
+		let lo = 0;
+		let hi = text.length;
+		while (lo < hi) {
+			const mid = (lo + hi + 1) >>> 1;
+			if (font.widthOfTextAtSize(text.slice(0, mid) + '…', sizePt) <= contentWidthPt) {
+				lo = mid;
+			} else {
+				hi = mid - 1;
+			}
+		}
+		return text.slice(0, lo) + '…';
+	};
+
+	if (label.kind === 'item') {
+		// SKU split: base (CAT-BRAND-MODEL-COND-YY-SEQ, 20 chars) on
+		// line 1, attrs (A1-A2-A3-A4-A5) on line 2.
+		const baseSku = label.sku.slice(0, 20);
+		const attrSku = label.sku.length > 21 ? label.sku.slice(21) : '';
+
+		let cursorY = (bodyTopMm - 3) * MM;
+		const SKU_SIZE = 10;
+		const ATTR_SIZE = 8;
+		const TITLE_SIZE = 9;
+		const DESC_SIZE = 7;
+
+		page.drawText(baseSku, {
+			x: contentX,
+			y: cursorY,
+			size: SKU_SIZE,
+			font: fonts.monoBold,
+			color: ink
+		});
+		cursorY -= (SKU_SIZE + 2) * 0.5 + 3.5;
+
+		if (attrSku) {
+			page.drawText(attrSku, {
+				x: contentX,
+				y: cursorY,
+				size: ATTR_SIZE,
+				font: fonts.monoBold,
+				color: inkSoft
+			});
+			cursorY -= ATTR_SIZE + 3;
+		}
+
+		// Title — bold sans, possibly wrapping onto two lines if it's
+		// long. Cap at 2 lines so the description still has room.
+		const titleLines = wrapLines(label.title, fonts.sansBold, TITLE_SIZE, contentWidthPt, 2);
+		for (const ln of titleLines) {
+			page.drawText(ln, {
+				x: contentX,
+				y: cursorY,
+				size: TITLE_SIZE,
+				font: fonts.sansBold,
+				color: ink
+			});
+			cursorY -= TITLE_SIZE + 2;
+		}
+
+		// Description — wrap into the remaining vertical space.
+		if (label.description) {
+			cursorY -= 2; // little breathing room
+			const plain = stripHtml(label.description);
+			if (plain) {
+				// How many lines fit?
+				const lineHeight = DESC_SIZE + 1.5;
+				const remainingPt = cursorY - bodyBottomMm * MM;
+				const maxLines = Math.max(1, Math.floor(remainingPt / lineHeight));
+				const descLines = wrapLines(plain, fonts.sansFont, DESC_SIZE, contentWidthPt, maxLines);
+				for (const ln of descLines) {
+					page.drawText(ln, {
+						x: contentX,
+						y: cursorY,
+						size: DESC_SIZE,
+						font: fonts.sansFont,
+						color: inkSoft
+					});
+					cursorY -= lineHeight;
+				}
+			}
+		}
+	} else {
+		// Bin label — same content shape as the DYMO bin layout but
+		// scaled up. Bin code is the headline, path/name beneath.
+		let cursorY = (bodyTopMm - 6) * MM;
+		const CODE_SIZE = 22;
+		const PATH_SIZE = 9;
+		const NAME_SIZE = 9;
+
+		page.drawText(label.code, {
+			x: contentX,
+			y: cursorY,
+			size: CODE_SIZE,
+			font: fonts.sansBold,
+			color: ink
+		});
+		cursorY -= CODE_SIZE + 2;
+
+		const pathFitted = fitChars(label.path, fonts.monoBold, PATH_SIZE);
+		page.drawText(pathFitted, {
+			x: contentX,
+			y: cursorY,
+			size: PATH_SIZE,
+			font: fonts.monoBold,
+			color: inkSoft
+		});
+		cursorY -= PATH_SIZE + 3;
+
+		if (label.name) {
+			const nameLines = wrapLines(label.name, fonts.italic, NAME_SIZE, contentWidthPt, 2);
+			for (const ln of nameLines) {
+				page.drawText(ln, {
+					x: contentX,
+					y: cursorY,
+					size: NAME_SIZE,
+					font: fonts.italic,
+					color: inkSoft
+				});
+				cursorY -= NAME_SIZE + 2;
+			}
+		}
+	}
+
+	// Pull in the unused-var ref so TS/build doesn't warn about widthPt
+	// when the layout above happens not to read it (defensive — keeps
+	// the renderer easy to extend without re-deriving these).
+	void widthPt;
+	void heightPt;
 }
 
 /**
