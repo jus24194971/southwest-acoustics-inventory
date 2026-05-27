@@ -578,18 +578,24 @@ export const actions: Actions = {
 	},
 
 	// ============================================================
-	// Quantity adjustment (stocked items)
+	// Quantity adjustment (all items — stocked + serialized)
 	// ============================================================
 	//
-	// Stocked items drift — eBay sells a thing we forgot to mark out,
-	// a friend grabs a part off the bench, we miscounted on receive,
-	// etc. This action lets Dad correct the on-hand qty + leave an
-	// audit row explaining why.
+	// Items drift — eBay sells a thing we forgot to mark out, a friend
+	// grabs a part off the bench, we miscounted on receive, etc. This
+	// action lets Dad correct the on-hand qty + leave an audit row
+	// explaining why.
+	//
+	// Works on both tracking modes. For serialized items the count is
+	// always 0 or 1 (one specific physical unit). Setting it to 0
+	// here means "out of stock, but keep the listing alive so we can
+	// re-stock when another comes in" — distinct from the explicit
+	// Retire action which means "this listing is dead forever".
 	//
 	// Reasons map to movement kinds:
 	//   sold_external   → 'sale'    (sold off-platform, not via SS push)
 	//   damaged         → 'scrap'   (broken / discarded)
-	//   count_correction, found_extra, other → 'adjust'
+	//   count_correction, found_extra, restocked, other → 'adjust'
 	//
 	// The movement.quantity stores the absolute delta; the note records
 	// the before/after numbers so the ledger reads "Adjusted 7 → 4".
@@ -599,13 +605,11 @@ export const actions: Actions = {
 		const item = await loadItemBySku(db, event.params.sku);
 		if (!item) throw error(404);
 
-		if (item.tracking_mode !== 'stocked') {
-			return fail(400, {
-				adjustError: 'Quantity adjustment is for stocked items. Use Retire for serialized items.'
-			});
-		}
 		if (item.retired_at) {
-			return fail(400, { adjustError: 'Retired items can\'t have their qty adjusted. Unretire first.' });
+			return fail(400, {
+				adjustError:
+					"This item is retired (discontinued). Bring it back first if you want to use it again — see the 'Retired' panel."
+			});
 		}
 
 		const form = await event.request.formData();
@@ -620,18 +624,42 @@ export const actions: Actions = {
 		if (!Number.isInteger(newQty) || newQty < 0) {
 			return fail(400, { adjustError: 'Quantity must be a non-negative integer.' });
 		}
+		// Serialized items are conceptually "one unique physical unit" —
+		// qty stays in 0..1. If Dad needs to track multiples of the same
+		// listing, the right move is to change tracking mode to stocked
+		// via the Edit form. We block >1 here to keep the model honest.
+		if (item.tracking_mode === 'serialized' && newQty > 1) {
+			return fail(400, {
+				adjustError:
+					'Serialized items can only be 0 or 1. To track multiple, change tracking mode to Stocked first.'
+			});
+		}
 		if (newQty === item.stock_qty) {
 			return fail(400, { adjustError: `Already at ${newQty}. Nothing to adjust.` });
 		}
 
-		const allowedReasons = ['sold_external', 'damaged', 'count_correction', 'found_extra', 'other'];
+		const allowedReasons = [
+			'sold_external',
+			'damaged',
+			'count_correction',
+			'found_extra',
+			'restocked',
+			'other'
+		];
 		if (!allowedReasons.includes(reason)) {
 			return fail(400, { adjustError: 'Pick a reason for the adjustment.' });
 		}
 
-		// Reason → movement kind.
+		// Reason → movement kind. Restocked is a 'receive' so it groups
+		// with new incoming inventory in the audit ledger.
 		const kind =
-			reason === 'sold_external' ? 'sale' : reason === 'damaged' ? 'scrap' : 'adjust';
+			reason === 'sold_external'
+				? 'sale'
+				: reason === 'damaged'
+					? 'scrap'
+					: reason === 'restocked'
+						? 'receive'
+						: 'adjust';
 
 		const delta = newQty - item.stock_qty;
 		const direction = delta > 0 ? 'up' : 'down';
@@ -640,26 +668,31 @@ export const actions: Actions = {
 			damaged: 'Damaged / discarded',
 			count_correction: 'Count correction',
 			found_extra: 'Found extra',
+			restocked: 'Restocked (new unit of same listing)',
 			other: 'Other'
 		};
 		const baseNote = `${reasonLabel[reason]}: ${item.stock_qty} → ${newQty} (${direction} ${Math.abs(delta)})`;
 		const finalNote = note ? `${baseNote} · ${note}` : baseNote;
 
 		// For sale/scrap movements we record the from_bin so the audit
-		// trail shows where the stock came out of. Pure 'adjust' has no
-		// physical move — leave bins null.
-		const fromBinId = kind === 'sale' || kind === 'scrap' ? item.current_bin_id : null;
+		// trail shows where the stock came out of. Restocked / adjust
+		// records to_bin instead (or current_bin if unchanged) so the
+		// new unit's location is logged.
+		const fromBinId =
+			kind === 'sale' || kind === 'scrap' ? item.current_bin_id : null;
+		const toBinId = kind === 'receive' ? item.current_bin_id : null;
 
 		await db.batch([
 			db
 				.prepare(
-					`INSERT INTO movement (item_id, kind, from_bin_id, quantity, note, actor)
-					 VALUES (?, ?, ?, ?, ?, ?)`
+					`INSERT INTO movement (item_id, kind, from_bin_id, to_bin_id, quantity, note, actor)
+					 VALUES (?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					item.id,
 					kind,
 					fromBinId,
+					toBinId,
 					Math.abs(delta),
 					finalNote,
 					event.locals?.userEmail ?? 'system'

@@ -63,25 +63,23 @@ export const load: PageServerLoad = async (event) => {
 			`SELECT COUNT(*) AS n FROM movement WHERE created_at >= datetime('now', '-7 days')`
 		),
 
-		// Sum of stock_qty across stocked items + 1-per-serialized — the
-		// "real" count of physical objects on hand, not just rows.
+		// Sum of stock_qty — the "real" count of physical objects on
+		// hand. Serialized items use stock_qty too (0 or 1), so an
+		// out-of-stock serialized listing (qty=0, listing preserved
+		// for restock) correctly counts as zero in the tile rather
+		// than misleadingly inflating to 1.
 		db.prepare(
-			`SELECT COALESCE(SUM(
-				CASE WHEN tracking_mode = 'stocked' THEN stock_qty ELSE 1 END
-			), 0) AS n
+			`SELECT COALESCE(SUM(stock_qty), 0) AS n
 			 FROM item
 			 WHERE retired_at IS NULL AND deleted_at IS NULL`
 		),
 
-		// Inventory value in cents — price × quantity for stocked,
-		// just price for serialized. Items without prices contribute 0.
+		// Inventory value in cents — price × stock_qty for everything.
+		// Items without prices contribute 0; out-of-stock items also
+		// contribute 0 (multiplied by stock_qty=0), which is the
+		// correct read for "what's our shelf actually worth".
 		db.prepare(
-			`SELECT COALESCE(SUM(
-				CASE
-					WHEN tracking_mode = 'stocked' THEN COALESCE(price_cents, 0) * stock_qty
-					ELSE COALESCE(price_cents, 0)
-				END
-			), 0) AS cents
+			`SELECT COALESCE(SUM(COALESCE(price_cents, 0) * stock_qty), 0) AS cents
 			 FROM item
 			 WHERE retired_at IS NULL AND deleted_at IS NULL`
 		),

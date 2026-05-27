@@ -309,7 +309,12 @@
 								{/if}
 							</td>
 							<td class="px-3 py-2.5 text-right font-mono text-xs text-[color:var(--color-ink-2)]">
-								{item.tracking_mode === 'stocked' ? item.stock_qty : 1}
+								<!-- stock_qty drives both modes now — serialized listings
+								     with qty=0 are "out of stock, restock pending" and get
+								     a gold tint so they stand out in scans. -->
+								<span class={item.stock_qty === 0 ? 'text-[color:var(--color-gold-bright)]' : ''}>
+									{item.stock_qty}
+								</span>
 							</td>
 							<td class="px-3 py-2.5 text-right font-mono text-[color:var(--color-ink)]">
 								{formatPrice(item.price_cents)}

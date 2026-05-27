@@ -396,14 +396,14 @@
 
 				${callout('💡', "The change shows up in that item's history (scroll down on the same page to <strong>Provenance</strong>) so you can always see what happened. Nothing gets erased — every change leaves a trace.")}
 
-				<p style="margin-top: 18px;"><strong>For serialized items (guitars, etc.) instead:</strong></p>
-				<p>A complete guitar that got sold needs to be <strong>Retired</strong>, not "adjusted to zero":</p>
-				${steps([
-					`Open the guitar's page.`,
-					`Bottom of the right sidebar: click ${btnGhost('Retire item')}.`,
-					`Pick reason: <em>Sold</em>, <em>Scrap</em>, or <em>Used in a build</em>.`,
-					`Note the order number or where it went. Click ${btnPrimary('Retire')}.`
-				])}
+				<p style="margin-top: 18px;"><strong>For serialized items (single guitars / one-off builds):</strong></p>
+				<p>Same panel, same flow — set quantity to <span style="font-family: monospace;">0</span>
+				when it sells, and pick the matching reason. The listing stays in the system and
+				stays searchable. If a similar one ever comes in again, open the page and set qty
+				back to <span style="font-family: monospace;">1</span> with the
+				<em>Restocked</em> reason — the original listing comes right back to life.</p>
+
+				${callout('💡', "Serialized + qty=0 means \"out of stock, listing preserved for restock\". That's different from <strong>Retire</strong> (in the panel below), which means \"this listing is discontinued forever\". Use Retire when you're certain nothing like it will ever come in again.")}
 			`
 		},
 

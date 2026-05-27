@@ -455,8 +455,18 @@
 				</div>
 			</div>
 
-			<!-- ON-HAND ADJUSTMENT (stocked only) ----------------- -->
-			{#if data.item.tracking_mode === 'stocked' && !data.item.retired_at}
+			<!-- ON-HAND PANEL ------------------------------------- -->
+			<!--
+				Works for both tracking modes. Serialized items live in
+				the 0..1 range — qty 0 means "out of stock, listing
+				preserved, re-stock when another comes in" (distinct
+				from the explicit Retire flow which means "discontinued
+				forever"). Stocked items live in 0..N.
+
+				Hidden for retired items because the Retire panel below
+				owns that flow — bring it back first, then adjust.
+			-->
+			{#if !data.item.retired_at}
 				<div class="panel px-4 py-3">
 					<div class="flex items-baseline justify-between">
 						<p class="eyebrow">On hand</p>
@@ -475,12 +485,28 @@
 					</div>
 
 					{#if !showingAdjust}
-						<p class="font-mono text-2xl text-[color:var(--color-ink)]">
-							{data.item.stock_qty}
-						</p>
-						<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
-							Off-platform sale, miscount, or breakage — click Adjust to fix.
-						</p>
+						<div class="flex items-baseline gap-2">
+							<p class="font-mono text-2xl text-[color:var(--color-ink)]">
+								{data.item.stock_qty}
+							</p>
+							{#if data.item.stock_qty === 0}
+								<span class="pill pill-warn text-[10px]">Out of stock</span>
+							{/if}
+						</div>
+						{#if data.item.tracking_mode === 'serialized'}
+							<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
+								{#if data.item.stock_qty === 0}
+									Listing preserved — adjust to 1 when another one comes in.
+								{:else}
+									One specific unit. Adjust to 0 when it sells; the listing stays
+									searchable for restocks.
+								{/if}
+							</p>
+						{:else}
+							<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
+								Off-platform sale, miscount, or breakage — click Adjust to fix.
+							</p>
+						{/if}
 					{:else}
 						<form method="POST" action="?/adjustQty" class="space-y-2">
 							{#if form?.adjustError}
@@ -500,6 +526,7 @@
 										name="new_qty"
 										type="number"
 										min="0"
+										max={data.item.tracking_mode === 'serialized' ? 1 : undefined}
 										required
 										bind:value={adjustNewQty}
 										class="field py-1 text-sm"
@@ -512,7 +539,23 @@
 									>
 										0
 									</button>
+									{#if data.item.tracking_mode === 'serialized'}
+										<button
+											type="button"
+											class="btn-ghost px-2 py-1 text-xs"
+											title="Set to one (restock)"
+											onclick={() => (adjustNewQty = 1)}
+										>
+											1
+										</button>
+									{/if}
 								</div>
+								{#if data.item.tracking_mode === 'serialized'}
+									<p class="text-[10px] italic text-[color:var(--color-ink-4)]">
+										Serialized — only 0 or 1. (Change tracking mode in Edit if you
+										need multiples.)
+									</p>
+								{/if}
 							</div>
 
 							<div class="space-y-1">
@@ -520,6 +563,7 @@
 								<select id="reason" name="reason" required class="field py-1 text-xs">
 									<option value="">— pick one —</option>
 									<option value="sold_external">Sold off-platform (eBay / cash / etc.)</option>
+									<option value="restocked">Restocked (another one came in)</option>
 									<option value="count_correction">Count correction</option>
 									<option value="damaged">Damaged / discarded</option>
 									<option value="found_extra">Found extra</option>
