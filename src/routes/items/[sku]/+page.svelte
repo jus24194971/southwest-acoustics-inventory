@@ -174,6 +174,7 @@
 	// "Open on Squarespace" link. Derived rather than recomputed in
 	// the template so we can use it from anywhere.
 	let ssListing = $derived(data.listings.find((l) => l.platform === 'squarespace') ?? null);
+	let reverbListing = $derived(data.listings.find((l) => l.platform === 'reverb') ?? null);
 </script>
 
 <section class="space-y-6">
@@ -795,13 +796,41 @@
 					</a>
 				{/if}
 
-				<!-- Stubs for future platforms -->
+				<a
+					href="/items/{encodeURIComponent(data.item.sku)}/listings/reverb"
+					class="flex items-baseline gap-2 rounded px-1 py-1 transition-colors hover:bg-[color:var(--color-hover)]"
+				>
+					<span class="text-sm font-medium text-[color:var(--color-ink)]">Reverb</span>
+					{#if reverbListing}
+						<span
+							class={reverbListing.status === 'live'
+								? 'pill pill-success'
+								: reverbListing.status === 'ready'
+									? 'pill pill-warn'
+									: reverbListing.status === 'error'
+										? 'pill pill-danger'
+										: 'pill'}
+						>
+							{reverbListing.status}
+						</span>
+					{:else}
+						<span class="pill text-[10px] text-[color:var(--color-ink-3)]">Not listed</span>
+					{/if}
+					<span class="ml-auto text-[10px] text-[color:var(--color-ink-3)]">Edit →</span>
+				</a>
+				{#if reverbListing?.external_url}
+					<a
+						href={reverbListing.external_url}
+						target="_blank"
+						class="px-1 text-[11px] text-[color:var(--color-gold-bright)] hover:underline"
+					>
+						Open on Reverb ↗
+					</a>
+				{/if}
+
+				<!-- Stubs for the platforms that aren't wired yet -->
 				<div class="flex items-baseline gap-2 px-1 py-1 opacity-50">
 					<span class="text-sm text-[color:var(--color-ink-2)]">eBay</span>
-					<span class="pill text-[10px]">Coming soon</span>
-				</div>
-				<div class="flex items-baseline gap-2 px-1 py-1 opacity-50">
-					<span class="text-sm text-[color:var(--color-ink-2)]">Reverb</span>
 					<span class="pill text-[10px]">Coming soon</span>
 				</div>
 			</div>

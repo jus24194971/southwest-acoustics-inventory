@@ -253,6 +253,32 @@ export async function createProduct(
 	return JSON.parse(body) as SquarespaceProduct;
 }
 
+/**
+ * Fetch a single product by id, including its full image list with
+ * publicly-fetchable CDN URLs. Used by the Reverb push path to grab
+ * SS-hosted image URLs and pass them to Reverb's create-listing
+ * endpoint (Reverb fetches images by URL, doesn't accept binary).
+ *
+ * SS's single-product GET wraps the result in `{ products: [...] }`
+ * even though it's just one — we unwrap to the bare product object.
+ */
+export async function getProduct(
+	apiKey: string,
+	productId: string
+): Promise<SquarespaceProduct> {
+	const res = await fetch(
+		`${BASE_URL}/commerce/products/${encodeURIComponent(productId)}`,
+		{ headers: authHeaders(apiKey) }
+	);
+	const body = await res.text();
+	if (!res.ok) throw new SquarespaceError(res.status, body);
+	const parsed = JSON.parse(body);
+	if (parsed.products && Array.isArray(parsed.products) && parsed.products[0]) {
+		return parsed.products[0] as SquarespaceProduct;
+	}
+	return parsed as SquarespaceProduct;
+}
+
 export async function updateProduct(
 	apiKey: string,
 	productId: string,

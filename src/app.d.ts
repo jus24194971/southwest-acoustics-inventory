@@ -24,6 +24,9 @@ declare global {
 				/** Anthropic API key for AI-generated product descriptions. Set
 				 *  via `wrangler pages secret put ANTHROPIC_API_KEY`. */
 				ANTHROPIC_API_KEY?: string;
+				/** Reverb Marketplace API key (Personal Access Token). Set
+				 *  via `wrangler pages secret put REVERB_API_KEY`. */
+				REVERB_API_KEY?: string;
 			};
 			context: {
 				waitUntil(promise: Promise<unknown>): void;
