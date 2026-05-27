@@ -1,9 +1,21 @@
 <script lang="ts">
 	import '../app.css';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import type { LayoutData } from './$types';
 
 	let { data, children }: { data: LayoutData; children: import('svelte').Snippet } = $props();
+
+	// Global search — accessible from every page. Routes to /items?q=…
+	// where the full filter UI lives.
+	let globalSearch = $state('');
+
+	function onGlobalSearch(e: Event) {
+		e.preventDefault();
+		const q = globalSearch.trim();
+		if (!q) return;
+		goto(`/items?q=${encodeURIComponent(q)}`);
+	}
 
 	// Nav structure. Data-driven so adding /scan, /import, etc. later
 	// is one-line work.
@@ -45,12 +57,12 @@
 	class:high-contrast={highContrast}
 >
 	<!-- ============================================================
-	     Toolbar — brand left, nav middle, utility right.
+	     Toolbar — brand left, global search middle, nav + utility right.
 	     ============================================================ -->
 	<header
 		class="sticky top-0 z-30 flex flex-wrap items-center gap-4 border-b border-[color:var(--color-line-dim)] bg-gradient-to-b from-[color:var(--color-panel-2)] to-[color:var(--color-panel)] px-5 py-3 shadow-[inset_0_1px_0_rgba(255,230,180,0.04),inset_0_-1px_0_rgba(0,0,0,0.45)]"
 	>
-		<a href="/" class="group flex min-w-0 flex-1 items-center gap-4 overflow-hidden">
+		<a href="/" class="group flex min-w-0 items-center gap-4 overflow-hidden">
 			<img
 				src="/southwest_logo.png"
 				alt="Southwest Acoustics"
@@ -68,6 +80,23 @@
 				<span class="eyebrow truncate">Southwest Acoustics · Shop Floor</span>
 			</div>
 		</a>
+
+		<!-- Global search — routes to /items?q=… so the filter UI handles the rest. -->
+		<form
+			onsubmit={onGlobalSearch}
+			class="flex min-w-0 flex-1 items-center"
+			role="search"
+		>
+			<input
+				type="search"
+				bind:value={globalSearch}
+				placeholder="Search SKU, title, brand…"
+				aria-label="Global item search"
+				class="field max-w-md py-1.5 text-sm"
+				style="min-height: 36px"
+				autocomplete="off"
+			/>
+		</form>
 
 		<nav class="flex flex-shrink-0 items-center gap-1">
 			{#each nav as item (item.href)}

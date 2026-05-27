@@ -26,8 +26,21 @@
 			</thead>
 			<tbody class="divide-y divide-[color:var(--color-line-dim)]">
 				{#each data.categories as cat (cat.id)}
-					<tr class="transition-colors hover:bg-[color:var(--color-hover)]">
-						<td class="px-3 py-2.5 font-mono text-sm text-[color:var(--color-gold)]">{cat.code}</td>
+					<tr
+						class="cursor-pointer transition-colors hover:bg-[color:var(--color-hover)]"
+						onclick={() =>
+							(window.location.href = `/items?category=${encodeURIComponent(cat.code)}`)}
+						title="View items in {cat.name}"
+					>
+						<td class="px-3 py-2.5">
+							<a
+								href="/items?category={encodeURIComponent(cat.code)}"
+								class="font-mono text-sm text-[color:var(--color-gold)] hover:text-[color:var(--color-gold-bright)]"
+								onclick={(e) => e.stopPropagation()}
+							>
+								{cat.code}
+							</a>
+						</td>
 						<td class="px-3 py-2.5">
 							<div class="font-medium text-[color:var(--color-ink)]">{cat.name}</div>
 							{#if cat.description}
