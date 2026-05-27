@@ -282,13 +282,18 @@ async function renderLabel(
 	// Compact labels get tighter margins so we can scrape every mm; the
 	// LX-610 has room to breathe so its margins are larger.
 	const small = heightMm < 30;
-	const padMm = small ? 1.2 : 2.5;
+	const padMm = small ? 1.2 : 2.5; // top, right, bottom
+	// Left padding is intentionally tight — every mm here is an mm the
+	// content column doesn't get. 0.5mm sits right at the printer's
+	// safe bleed line (Primera safe area is ~0.5mm, DYMO 0.5–1mm) so
+	// we still print cleanly to the edge.
+	const padLeftMm = 0.5;
 	const gapMm = small ? 1.5 : 3;
 
 	// ---- QR: bottom-left, scaled to the short edge --------------------
 	const qrSizeMm = Math.min(heightMm - 2 * padMm, 36);
 	const qrSizePt = qrSizeMm * MM;
-	const qrX = padMm * MM;
+	const qrX = padLeftMm * MM;
 	const qrY = padMm * MM;
 	const qrPng = await renderQrPng(label.url);
 	const qrImage = await doc.embedPng(qrPng);
@@ -344,52 +349,40 @@ async function renderLabel(
 	};
 
 	// Item label ---------------------------------------------------------
+	// Visual hierarchy: title (plain text) is the heading at the top in
+	// big bold sans; the SKU rides the bottom in a smaller mono for
+	// quick reference. Description, when there's vertical room
+	// (LX-610-class labels), sits in between.
 	if (label.kind === 'item') {
 		const baseSku = label.sku.slice(0, 20);
 		const attrSku = label.sku.length > 21 ? label.sku.slice(21) : '';
 
-		// Font candidates scale with label size. Small labels can dip to
-		// 5pt — still readable when held close, important when content
-		// width is tight (DYMO 19mm has ~40mm of content).
-		const skuCandidates = small ? [9, 8, 7, 6, 5] : [10, 9, 8, 7];
-		const attrCandidates = small ? [8, 7, 6, 5] : [9, 8, 7];
+		// Title is the heavyweight now — bumped from 6.5pt/9pt to
+		// 8.5pt/12pt so the human-readable name reads first at arm's
+		// length. SKU stays auto-fit but with a smaller candidate range.
+		const titleSize = small ? 8.5 : 12;
+		const skuCandidates = small ? [6, 5.5, 5] : [8, 7, 6.5];
+		const attrCandidates = small ? [5, 4.5] : [7, 6.5, 6];
 
 		const skuSize = fitOneLineSize(baseSku, fonts.monoBold, skuCandidates);
 		const attrSize = attrSku ? fitOneLineSize(attrSku, fonts.monoBold, attrCandidates) : 0;
-		const titleSize = small ? 6.5 : 9;
 		const descSize = 7;
 
-		// Line spacing tightens for small labels.
-		const skuGap = small ? 2 : 3;
-		const attrGap = small ? 2 : 4;
 		const titleGap = small ? 1.5 : 2;
+		const skuGap = small ? 1.2 : 2;
 		const descLineHeight = descSize + 1.5;
 
-		let cursorY = (contentTopMm - skuSize / MM - 0.5) * MM;
+		// Pre-compute the bottom band height so the description knows
+		// where to stop. SKU base line sits at padMm from bottom; attrs
+		// line above it.
+		const skuBlockHeightMm =
+			(skuSize + (attrSku ? skuGap + attrSize : 0)) / MM;
+		const skuBottomMm = padMm;
+		const skuTopMm = skuBottomMm + skuBlockHeightMm + 0.5;
 
-		page.drawText(baseSku, {
-			x: contentX,
-			y: cursorY,
-			size: skuSize,
-			font: fonts.monoBold,
-			color: ink
-		});
-		cursorY -= skuSize + skuGap;
-
-		if (attrSku) {
-			page.drawText(attrSku, {
-				x: contentX,
-				y: cursorY,
-				size: attrSize,
-				font: fonts.monoBold,
-				color: inkSoft
-			});
-			cursorY -= attrSize + attrGap;
-		}
-
-		// Title — wrapped to 1 line on small labels (no vertical room),
-		// up to 2 lines on big ones.
-		const maxTitleLines = small ? 1 : 2;
+		// --- Title from the top ---
+		let cursorY = (contentTopMm - titleSize / MM - 0.2) * MM;
+		const maxTitleLines = small ? 2 : 3;
 		const titleLines = wrapLines(
 			label.title,
 			fonts.sansBold,
@@ -398,7 +391,7 @@ async function renderLabel(
 			maxTitleLines
 		);
 		for (const ln of titleLines) {
-			if (cursorY < qrY + 1 * MM) break; // ran out of room
+			if (cursorY < skuTopMm * MM + 2) break; // ran into SKU band
 			page.drawText(ln, {
 				x: contentX,
 				y: cursorY,
@@ -409,13 +402,12 @@ async function renderLabel(
 			cursorY -= titleSize + titleGap;
 		}
 
-		// Description — only when there's meaningful vertical room.
-		// Skipped entirely on small labels.
+		// --- Description in the gap (large labels only) ---
 		if (!small && label.description) {
-			cursorY -= 2;
+			cursorY -= 1;
 			const plain = stripHtml(label.description);
 			if (plain) {
-				const remainingPt = cursorY - qrY;
+				const remainingPt = cursorY - skuTopMm * MM;
 				const maxLines = Math.max(0, Math.floor(remainingPt / descLineHeight));
 				if (maxLines > 0) {
 					const descLines = wrapLines(plain, fonts.sansFont, descSize, contentWidthPt, maxLines);
@@ -431,6 +423,29 @@ async function renderLabel(
 					}
 				}
 			}
+		}
+
+		// --- SKU anchored at the bottom (smaller, mono, soft ink) ---
+		// Base SKU above attrs so a top-down read still parses
+		// "category-brand-model …" first. Anchored to padMm-from-bottom
+		// rather than chasing a cursor so the layout is stable even
+		// when title or description didn't fill their max lines.
+		const skuBaseY = skuBottomMm * MM + (attrSku ? attrSize + skuGap : 0);
+		page.drawText(baseSku, {
+			x: contentX,
+			y: skuBaseY,
+			size: skuSize,
+			font: fonts.monoBold,
+			color: inkSoft
+		});
+		if (attrSku) {
+			page.drawText(attrSku, {
+				x: contentX,
+				y: skuBottomMm * MM,
+				size: attrSize,
+				font: fonts.monoBold,
+				color: inkSoft
+			});
 		}
 	} else {
 		// Bin label ------------------------------------------------------
