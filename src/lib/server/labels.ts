@@ -177,10 +177,9 @@ const SA_GOLD = rgb(0.839, 0.690, 0.455);
 const SA_GOLD_DIM = rgb(0.478, 0.384, 0.220);
 
 /**
- * Draw the SA monogram (italic gold "SA" on dark-brown square) at the
- * given position and size. Mirrors the listing-studio icon generator:
- * at ≥12pt the icon gets a subtle inset panel + gold-dim ring; below
- * that it's a plain dark square (rings turn to noise on tiny labels).
+ * Draw the SA monogram (italic gold "SA" letters) at the given
+ * position and size. Per Dad's call: bare letters, no outlining box
+ * and no border ring — they print directly on the white label paper.
  *
  * `size` is in PDF points (pt). Use `mm * MM` to convert.
  */
@@ -191,38 +190,15 @@ function drawSaIcon(
 	size: number,
 	fonts: LabelFonts
 ): void {
-	page.drawRectangle({
-		x,
-		y,
-		width: size,
-		height: size,
-		color: SA_BG
-	});
-
-	// Inset panel + ring only at sizes where 1-2pt detail reads cleanly.
-	const SHOW_RING_MIN_PT = 18;
-	if (size >= SHOW_RING_MIN_PT) {
-		const inset = Math.max(0.6, size / 32);
-		const ringWidth = Math.max(0.3, size / 96);
-		page.drawRectangle({
-			x: x + inset,
-			y: y + inset,
-			width: size - 2 * inset,
-			height: size - 2 * inset,
-			color: SA_BG_PANEL,
-			borderColor: SA_GOLD_DIM,
-			borderWidth: ringWidth
-		});
-	}
-
 	// "SA" letters — italic at the larger sizes (matches the Cambria
-	// Italic look in the Python generator), upright bold when the
-	// label is tiny so the diagonal A stays defined.
+	// Italic look from the Listing Studio icon generator), upright
+	// bold when the label is tiny so the diagonal A stays defined.
 	const useItalic = size >= 22;
 	const font = useItalic ? fonts.timesItalicBold : fonts.sansBold;
-	// Sized to take ~58% of the icon when italic, ~70% when upright —
-	// italics carry more visual weight and need a bit more breathing room.
-	const fontSizePt = useItalic ? size * 0.58 : size * 0.7;
+	// Without the surrounding panel framing the letters, we can let
+	// them fill more of the logical box than the boxed version did
+	// (was 58% italic / 70% upright with the panel; now ~85% / 90%).
+	const fontSizePt = useItalic ? size * 0.85 : size * 0.9;
 	const text = 'SA';
 	const textWidth = font.widthOfTextAtSize(text, fontSizePt);
 	// Optical centering: cap-height ≈ 0.7 of font size; baseline lands
@@ -304,16 +280,29 @@ async function renderLabel(
 		height: qrSizePt
 	});
 
-	// ---- SA monogram: top-right ---------------------------------------
-	// Square icon, sized as a fraction of label height capped at 16mm
-	// (any bigger and it dominates the LX-610 layout). Floor at 4mm so
-	// even on a 19mm DYMO the icon is recognizable rather than invisible.
-	const iconSizeMm = Math.max(4, Math.min(heightMm * 0.42, 16));
-	const iconX = (widthMm - padMm - iconSizeMm) * MM;
+	// ---- SA monogram: gold "SA" letters in top-right corner ------------
+	// Per Dad: drop the outlining box / dark background, just the
+	// letters. Inset further from the right edge so the Primera's
+	// safe-print zone doesn't clip the second letter. drawSaIcon now
+	// renders bare letters on white paper (no panel, no ring).
+	//
+	// Small labels (DYMO 19/25mm) cap the icon hard at 5mm — anything
+	// bigger eats the vertical room the title needs to sit in. Large
+	// labels (LX-610) get a comfortable 13mm.
+	const iconSizeMm = Math.max(
+		4,
+		Math.min(heightMm * (small ? 0.28 : 0.36), small ? 5 : 13)
+	);
+	// Right-edge inset is bigger than the generic padMm so the letters
+	// sit safely inside the printable area: ~2.5mm on small labels,
+	// ~5mm on large. Tunable knob if Dad's printer trims more than
+	// expected.
+	const iconRightInsetMm = small ? padMm + 1 : padMm + 2.5;
+	const iconX = (widthMm - iconRightInsetMm - iconSizeMm) * MM;
 	const iconY = (heightMm - padMm - iconSizeMm) * MM;
 	drawSaIcon(page, iconX, iconY, iconSizeMm * MM, fonts);
 
-	// ---- Content column: right of QR, below SA icon -------------------
+	// ---- Content column: right of QR, below SA letters -----------------
 	const contentX = qrX + qrSizePt + gapMm * MM;
 	const contentRight = (widthMm - padMm) * MM;
 	const contentWidthPt = contentRight - contentX;
