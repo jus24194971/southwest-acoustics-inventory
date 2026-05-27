@@ -68,7 +68,17 @@
 
 	let primaryPhoto = $derived(data.photos[0]);
 	let extraPhotos = $derived(data.photos.slice(1));
-	let activePhotoIndex = $state(0);
+	// Active thumbnail index. Initialized from the URL's photo_active
+	// param when present (set by the reorder action so the just-moved
+	// photo stays highlighted) and bounded to the actual photo count.
+	let activePhotoIndex = $state(
+		untrack(() => {
+			const raw = page.url.searchParams.get('photo_active');
+			const idx = raw ? parseInt(raw, 10) : 0;
+			if (!Number.isInteger(idx) || idx < 0) return 0;
+			return Math.min(idx, Math.max(0, data.photos.length - 1));
+		})
+	);
 	let activePhoto = $derived(data.photos[activePhotoIndex] ?? null);
 
 	// Five-slot attribute display. Each slot is rendered only if the item's
@@ -350,6 +360,48 @@
 						<p class="text-[10px] uppercase tracking-wide text-[color:var(--color-ink-4)]">
 							Selected: photo {activePhotoIndex + 1} of {data.photos.length}
 						</p>
+
+						<!-- Reorder row — up/down by one position. Position drives
+						     the order on the item list thumb, the SS push image
+						     order, and the Reverb URL list. -->
+						{#if data.photos.length > 1}
+							<div class="flex gap-2">
+								<form method="POST" action="?/reorderPhoto" class="flex-1">
+									<input
+										type="hidden"
+										name="photo_id"
+										value={activePhoto?.id ?? data.photos[0].id}
+									/>
+									<input type="hidden" name="direction" value="up" />
+									<button
+										type="submit"
+										class="btn-ghost w-full px-3 py-1.5 text-xs"
+										disabled={activePhotoIndex === 0}
+										title="Move this photo one position earlier"
+									>
+										↑ Up
+									</button>
+								</form>
+								<form method="POST" action="?/reorderPhoto" class="flex-1">
+									<input
+										type="hidden"
+										name="photo_id"
+										value={activePhoto?.id ?? data.photos[0].id}
+									/>
+									<input type="hidden" name="direction" value="down" />
+									<button
+										type="submit"
+										class="btn-ghost w-full px-3 py-1.5 text-xs"
+										disabled={activePhotoIndex === data.photos.length - 1}
+										title="Move this photo one position later"
+									>
+										↓ Down
+									</button>
+								</form>
+							</div>
+						{/if}
+
+						<!-- Make-primary + delete row -->
 						<div class="flex gap-2">
 							{#if activePhotoIndex !== 0}
 								<form method="POST" action="?/makePrimaryPhoto" class="flex-1">

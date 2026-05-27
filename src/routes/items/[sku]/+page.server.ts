@@ -903,6 +903,76 @@ export const actions: Actions = {
 	},
 
 	// ============================================================
+	// Reorder a photo (move up or down by one position)
+	// ============================================================
+	//
+	// The position field drives display order everywhere downstream:
+	// item-list thumbnails, the detail-page gallery, the SS push, and
+	// the Reverb URL list. So a single reorder click here propagates
+	// the new order to every storefront on the next push.
+	//
+	// Swap-and-renumber approach (not "shift by N"): pull the current
+	// sorted id list, swap the target with its neighbor, write all
+	// positions 0..N. Resolves any past holes from soft-deletes too.
+
+	reorderPhoto: async (event) => {
+		const db = getDB(event);
+		const item = await loadItemBySku(db, event.params.sku);
+		if (!item) throw error(404);
+
+		const form = await event.request.formData();
+		const photoIdRaw = form.get('photo_id')?.toString();
+		const direction = form.get('direction')?.toString();
+		const photoId = photoIdRaw ? parseInt(photoIdRaw, 10) : NaN;
+
+		if (!Number.isInteger(photoId)) {
+			return fail(400, { photoError: 'Bad photo id.' });
+		}
+		if (direction !== 'up' && direction !== 'down') {
+			return fail(400, { photoError: "Direction must be 'up' or 'down'." });
+		}
+
+		// Snapshot current order, exclude soft-deleted.
+		const { results: photos } = await db
+			.prepare(
+				`SELECT id FROM item_photo
+				 WHERE item_id = ? AND deleted_at IS NULL
+				 ORDER BY position, id`
+			)
+			.bind(item.id)
+			.all<{ id: number }>();
+
+		const ids = photos.map((p) => p.id);
+		const currentIdx = ids.indexOf(photoId);
+		if (currentIdx === -1) {
+			return fail(400, { photoError: 'Photo not found on this item.' });
+		}
+
+		const targetIdx = direction === 'up' ? currentIdx - 1 : currentIdx + 1;
+		// Out-of-bounds = already at edge → no-op (still redirect so the
+		// page refreshes cleanly).
+		if (targetIdx < 0 || targetIdx >= ids.length) {
+			throw redirect(303, `/items/${item.sku}?photo_active=${currentIdx}`);
+		}
+
+		// Swap.
+		[ids[currentIdx], ids[targetIdx]] = [ids[targetIdx], ids[currentIdx]];
+
+		// Renumber 0..N. Renumbering everything (rather than just the
+		// two moved photos) heals any stale gaps from past soft-deletes.
+		const writes = ids.map((id, idx) =>
+			db
+				.prepare(`UPDATE item_photo SET position = ? WHERE id = ? AND item_id = ?`)
+				.bind(idx, id, item.id)
+		);
+		if (writes.length > 0) await db.batch(writes);
+
+		// Redirect back with photo_active so the same photo stays
+		// selected/highlighted in the gallery after the page reloads.
+		throw redirect(303, `/items/${item.sku}?photo_active=${targetIdx}`);
+	},
+
+	// ============================================================
 	// Split off as variant
 	// ============================================================
 	//
