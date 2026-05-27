@@ -63,7 +63,10 @@ async function probe(
 			method,
 			status: res.status,
 			ok: res.ok,
-			body: body.length > 2000 ? body.slice(0, 2000) + '\n…(truncated)' : body
+			// Bumped from 2000 → 12000 chars after the first probe run
+			// truncated the product GET mid-images[]. Larger budget so
+			// we see undocumented fields if they exist further down.
+			body: body.length > 12000 ? body.slice(0, 12000) + '\n…(truncated)' : body
 		};
 	} catch (err) {
 		return {
@@ -91,51 +94,114 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	// Candidate endpoints — best guesses based on SS naming conventions.
-	// Most will probably 404; we just want to find which one(s) work
-	// with the new broader-scope API key.
+	// Round 2: expanded after the first probe found nothing for
+	// fulfillment/shipping/categories. More naming patterns + paths
+	// nested under products/store_pages since those are siblings of
+	// fulfillment in the SS data model.
 	const candidates: Array<{ label: string; url: string }> = [
-		// Fulfillment profiles — the main hunt
+		// Fulfillment profiles — top-level candidates
 		{ label: 'v1 fulfillment_profiles', url: `${API_BASES.v1}/commerce/fulfillment_profiles` },
-		{ label: 'v1 fulfillment-profiles (dash)', url: `${API_BASES.v1}/commerce/fulfillment-profiles` },
-		{ label: 'v1 fulfillmentProfiles (camel)', url: `${API_BASES.v1}/commerce/fulfillmentProfiles` },
+		{ label: 'v1 fulfillment-profiles', url: `${API_BASES.v1}/commerce/fulfillment-profiles` },
+		{ label: 'v1 fulfillmentProfiles', url: `${API_BASES.v1}/commerce/fulfillmentProfiles` },
+		{ label: 'v1 fulfillment/profiles', url: `${API_BASES.v1}/commerce/fulfillment/profiles` },
+		{ label: 'v1 fulfillment', url: `${API_BASES.v1}/commerce/fulfillment` },
 		{ label: 'v2 fulfillment_profiles', url: `${API_BASES.v2}/commerce/fulfillment_profiles` },
 		{ label: 'v2 fulfillment-profiles', url: `${API_BASES.v2}/commerce/fulfillment-profiles` },
 		{ label: 'v2 fulfillmentProfiles', url: `${API_BASES.v2}/commerce/fulfillmentProfiles` },
+		{ label: 'v2 fulfillment/profiles', url: `${API_BASES.v2}/commerce/fulfillment/profiles` },
+		{ label: 'v2 fulfillment', url: `${API_BASES.v2}/commerce/fulfillment` },
 
 		// Shipping profile variants
 		{ label: 'v1 shipping/profiles', url: `${API_BASES.v1}/commerce/shipping/profiles` },
 		{ label: 'v1 shipping_profiles', url: `${API_BASES.v1}/commerce/shipping_profiles` },
+		{ label: 'v1 shipping-profiles', url: `${API_BASES.v1}/commerce/shipping-profiles` },
+		{ label: 'v1 shipping', url: `${API_BASES.v1}/commerce/shipping` },
 		{ label: 'v2 shipping/profiles', url: `${API_BASES.v2}/commerce/shipping/profiles` },
 		{ label: 'v2 shipping_profiles', url: `${API_BASES.v2}/commerce/shipping_profiles` },
+		{ label: 'v2 shipping-profiles', url: `${API_BASES.v2}/commerce/shipping-profiles` },
+		{ label: 'v2 shipping', url: `${API_BASES.v2}/commerce/shipping` },
 
-		// Categories — the other unknown
+		// Categories candidates
 		{ label: 'v1 categories', url: `${API_BASES.v1}/commerce/categories` },
 		{ label: 'v2 categories', url: `${API_BASES.v2}/commerce/categories` },
 		{ label: 'v1 product_categories', url: `${API_BASES.v1}/commerce/product_categories` },
 		{ label: 'v2 product-categories', url: `${API_BASES.v2}/commerce/product-categories` },
+		{ label: 'v2 product_categories', url: `${API_BASES.v2}/commerce/product_categories` },
 
 		// Other surfaces of interest
-		{ label: 'v1 store_pages (known)', url: `${API_BASES.v1}/commerce/store_pages` },
+		{ label: 'v1 store_pages', url: `${API_BASES.v1}/commerce/store_pages` },
 		{ label: 'v2 store_pages', url: `${API_BASES.v2}/commerce/store_pages` },
-		{ label: 'v2 store-pages (dash)', url: `${API_BASES.v2}/commerce/store-pages` },
+		{ label: 'v2 store-pages', url: `${API_BASES.v2}/commerce/store-pages` },
 
 		// Site-level
 		{ label: 'v1 website', url: `${API_BASES.v1}/website` },
 		{ label: 'v2 website', url: `${API_BASES.v2}/website` }
 	];
 
+	// Sub-resources of the store page — fulfillment is store-wide in
+	// SS so the list might be nested under the storePageId.
+	// Use the known good store page from the first probe run.
+	const knownStorePageId = '60ef56663cf7327e6657d84c';
+	candidates.push(
+		{
+			label: 'v1 store_pages/{id}/fulfillment_profiles',
+			url: `${API_BASES.v1}/commerce/store_pages/${knownStorePageId}/fulfillment_profiles`
+		},
+		{
+			label: 'v2 store_pages/{id}/fulfillment_profiles',
+			url: `${API_BASES.v2}/commerce/store_pages/${knownStorePageId}/fulfillment_profiles`
+		},
+		{
+			label: 'v1 store_pages/{id}',
+			url: `${API_BASES.v1}/commerce/store_pages/${knownStorePageId}`
+		},
+		{
+			label: 'v2 store_pages/{id}',
+			url: `${API_BASES.v2}/commerce/store_pages/${knownStorePageId}`
+		}
+	);
+
 	// Plus: if a product id is supplied, GET it RAW so we can see all
 	// the fields the docs don't list — categories, profile assignment,
-	// position/order, anything else hiding in the response.
+	// position/order, anything else hiding in the response. Also try
+	// product sub-resources where fulfillment might be exposed
+	// per-product (the SS admin UI does show it on each product).
 	if (body.sampleProductId) {
+		const pid = encodeURIComponent(body.sampleProductId);
 		candidates.push(
+			{ label: `v1 product GET (raw)`, url: `${API_BASES.v1}/commerce/products/${pid}` },
+			{ label: `v2 product GET (raw)`, url: `${API_BASES.v2}/commerce/products/${pid}` },
 			{
-				label: `v1 product GET (raw fields)`,
-				url: `${API_BASES.v1}/commerce/products/${encodeURIComponent(body.sampleProductId)}`
+				label: `v1 product/{id}/fulfillment`,
+				url: `${API_BASES.v1}/commerce/products/${pid}/fulfillment`
 			},
 			{
-				label: `v2 product GET (raw fields)`,
-				url: `${API_BASES.v2}/commerce/products/${encodeURIComponent(body.sampleProductId)}`
+				label: `v2 product/{id}/fulfillment`,
+				url: `${API_BASES.v2}/commerce/products/${pid}/fulfillment`
+			},
+			{
+				label: `v1 product/{id}/fulfillment_profile`,
+				url: `${API_BASES.v1}/commerce/products/${pid}/fulfillment_profile`
+			},
+			{
+				label: `v2 product/{id}/fulfillment_profile`,
+				url: `${API_BASES.v2}/commerce/products/${pid}/fulfillment_profile`
+			},
+			{
+				label: `v1 product/{id}/shipping`,
+				url: `${API_BASES.v1}/commerce/products/${pid}/shipping`
+			},
+			{
+				label: `v2 product/{id}/shipping`,
+				url: `${API_BASES.v2}/commerce/products/${pid}/shipping`
+			},
+			{
+				label: `v1 product/{id}/categories`,
+				url: `${API_BASES.v1}/commerce/products/${pid}/categories`
+			},
+			{
+				label: `v2 product/{id}/categories`,
+				url: `${API_BASES.v2}/commerce/products/${pid}/categories`
 			}
 		);
 	}
