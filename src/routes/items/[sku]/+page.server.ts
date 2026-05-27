@@ -3,6 +3,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 import { error, fail, redirect } from '@sveltejs/kit';
 import { getDB } from '$lib/server/db';
 import { isCondition, normaliseAttr, ATTR_UNIQUE, generateSku, type Condition } from '$lib/server/sku';
+import { defaultSlug, type Platform } from '$lib/server/listings';
 
 /**
  * Item detail page — the screen Dad spends most of his time on.
@@ -899,5 +900,248 @@ export const actions: Actions = {
 		if (writes.length > 0) await db.batch(writes);
 
 		throw redirect(303, `/items/${item.sku}`);
+	},
+
+	// ============================================================
+	// Split off as variant
+	// ============================================================
+	//
+	// Dad's scenario: he has 12 strat bodies in stock, one has a paint
+	// chip. The blemished one needs its own listing — different photo,
+	// different price, different description — but it's not a "new
+	// SKU from scratch" because it's the same body, just one with a
+	// story.
+	//
+	// This action pulls one unit out of a stocked parent and creates a
+	// linked serialized variant. The parent's stock_qty decrements by
+	// 1; the variant gets:
+	//   - same category / brand / model / year / attributes as parent
+	//   - configurable condition (often the same — "Blemished but New")
+	//   - parent_item_id back-link so the variants show on parent's page
+	//   - title prefixed with the variant reason ("Blemished — …")
+	//   - description carrying the user's specific note
+	//   - draft marketplace_listing rows for ALL four platforms so the
+	//     variant is ready to push to Squarespace today and to eBay /
+	//     Reverb / Etsy as soon as those backends land. Each draft is
+	//     pre-tagged with the variant reason (lowercased) plus "sale".
+	//
+	// Two movements on each side: source 'adjust' (qty out), variant
+	// 'receive' (qty in). Both reference the other's SKU so the audit
+	// ledger reads as a paired split.
+
+	splitOff: async (event) => {
+		const db = getDB(event);
+		const source = await loadItemBySku(db, event.params.sku);
+		if (!source) throw error(404);
+
+		if (source.tracking_mode !== 'stocked') {
+			return fail(400, {
+				splitError:
+					'Only stocked items can be split into variants. Serialized items are already one-off — list them directly.'
+			});
+		}
+		if (source.stock_qty <= 0) {
+			return fail(400, {
+				splitError: 'Stock is 0 — nothing to pull off.'
+			});
+		}
+		if (source.retired_at) {
+			return fail(400, { splitError: "Can't split a retired item. Bring it back first." });
+		}
+
+		const form = await event.request.formData();
+		const newCondition = (form.get('new_condition') ?? source.condition).toString();
+		const variantReason = (form.get('variant_reason') ?? '').toString().trim();
+		const variantNote = (form.get('variant_note') ?? '').toString().trim();
+		const priceOverrideStr = form.get('variant_price')?.toString().trim();
+
+		if (!isCondition(newCondition)) {
+			return fail(400, { splitError: 'Pick a valid condition for the variant.' });
+		}
+		if (!variantReason) {
+			return fail(400, {
+				splitError:
+					'Variant reason is required — e.g. "Blemished", "Demo", "Open Box". Becomes the title prefix and a listing tag.'
+			});
+		}
+		if (variantReason.length > 30) {
+			return fail(400, { splitError: 'Variant reason should be under 30 characters.' });
+		}
+
+		// New SKU under the same category/brand/model — sequence number
+		// auto-increments. If condition changed the SKU's COND segment
+		// shifts too so the codes stay readable.
+		const newSku = await generateSku(db, {
+			categoryCode: source.cat_code,
+			brandCode: source.brand_code ?? 'XXX',
+			modelCode: source.model ?? 'XXX',
+			condition: newCondition as Condition,
+			yearReceived: source.year_received,
+			attr1: source.attr_1,
+			attr2: source.attr_2,
+			attr3: source.attr_3,
+			attr4: source.attr_4,
+			attr5: source.attr_5
+		});
+
+		// Build the variant's title — reason prefix on the parent title
+		// keeps the relationship obvious in lists and on the storefront.
+		// Cap total length so DYMO labels don't have to truncate aggressively.
+		const variantTitle = `${variantReason} — ${source.title}`.slice(0, 200);
+
+		// Description: the user's note if they wrote one; otherwise a
+		// stub so the variant page isn't empty.
+		const variantDescription =
+			variantNote ||
+			`${variantReason} variant of ${source.sku}. ${source.title}.`;
+
+		const priceCents = priceOverrideStr
+			? Math.round(parseFloat(priceOverrideStr) * 100)
+			: source.price_cents;
+
+		// ---- Insert the variant item (needs its own round-trip to get
+		//      the new id back via RETURNING) ---------------------------
+		const inserted = await db
+			.prepare(
+				`INSERT INTO item (
+					sku, title, description,
+					category_id, brand_id, model, condition,
+					year_received, cost_cents, price_cents, current_bin_id,
+					tracking_mode, stock_qty, parent_item_id,
+					attr_1, attr_2, attr_3, attr_4, attr_5,
+					attr_1_unique_desc, attr_2_unique_desc, attr_3_unique_desc,
+					attr_4_unique_desc, attr_5_unique_desc
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'serialized', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				RETURNING id`
+			)
+			.bind(
+				newSku,
+				variantTitle,
+				variantDescription,
+				source.category_id,
+				source.brand_id,
+				source.model,
+				newCondition,
+				source.year_received,
+				source.cost_cents,
+				priceCents,
+				source.current_bin_id,
+				source.id, // parent_item_id
+				source.attr_1,
+				source.attr_2,
+				source.attr_3,
+				source.attr_4,
+				source.attr_5,
+				source.attr_1_unique_desc,
+				source.attr_2_unique_desc,
+				source.attr_3_unique_desc,
+				source.attr_4_unique_desc,
+				source.attr_5_unique_desc
+			)
+			.first<{ id: number }>();
+		if (!inserted) throw error(500, 'splitOff: variant INSERT returned no row');
+		const variantId = inserted.id;
+
+		// ---- Build the marketplace_listing pre-fills for every platform
+		// so each one is a one-click push when its backend is ready.
+		// Tags carry the variant reason + a generic 'sale' marker so
+		// the storefronts can route them into a Special Value collection.
+		const reasonSlug = variantReason
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-|-$/g, '');
+		const tagsJson = JSON.stringify(
+			Array.from(new Set([reasonSlug, 'sale'].filter(Boolean)))
+		);
+		const slug = defaultSlug(variantTitle);
+
+		const PLATFORMS: Platform[] = ['squarespace', 'ebay', 'reverb', 'etsy'];
+
+		const actor = event.locals?.userEmail ?? 'system';
+		const splitNote =
+			`Split off 1 unit as variant ${newSku} (${variantReason})` +
+			(variantNote ? ` — ${variantNote}` : '');
+
+		// ---- One batched write for everything else: decrement source,
+		// log both movements, create four draft listings. Keeps the
+		// split atomic from the user's perspective.
+		const writes = [
+			db
+				.prepare(
+					`UPDATE item SET stock_qty = stock_qty - 1, updated_at = datetime('now') WHERE id = ?`
+				)
+				.bind(source.id),
+
+			// Source side: adjust (qty out), references the new variant SKU.
+			db
+				.prepare(
+					`INSERT INTO movement (item_id, kind, from_bin_id, quantity, note, actor, reference)
+					 VALUES (?, 'adjust', ?, 1, ?, ?, ?)`
+				)
+				.bind(source.id, source.current_bin_id, splitNote, actor, newSku),
+
+			// Variant side: receive (qty in), references the source SKU.
+			db
+				.prepare(
+					`INSERT INTO movement (item_id, kind, to_bin_id, quantity, note, actor, reference)
+					 VALUES (?, 'receive', ?, 1, ?, ?, ?)`
+				)
+				.bind(
+					variantId,
+					source.current_bin_id,
+					`Split off from parent ${source.sku} as ${variantReason}`,
+					actor,
+					source.sku
+				)
+		];
+
+		// Pre-create draft listings for every platform. Inline INSERTs
+		// rather than going through upsertListingContent so they batch
+		// with the other writes — and ON CONFLICT DO NOTHING in case
+		// some platform's listing already exists for this item somehow.
+		for (const platform of PLATFORMS) {
+			writes.push(
+				db
+					.prepare(
+						`INSERT INTO marketplace_listing (
+							item_id, platform,
+							listing_title, listing_description_html, listing_url_slug,
+							listing_tags_json, listing_price_cents, listing_visible,
+							storefront_id, status, updated_at
+						)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, 'draft', datetime('now'))
+						 ON CONFLICT (item_id, platform) DO NOTHING`
+					)
+					.bind(
+						variantId,
+						platform,
+						variantTitle,
+						`<p>${escapeHtml(variantDescription)}</p>`,
+						slug,
+						tagsJson,
+						priceCents
+					)
+			);
+		}
+
+		await db.batch(writes);
+
+		// Land Dad on the new variant — it's where he'll add photos,
+		// fine-tune the listing, and push to Squarespace.
+		throw redirect(303, `/items/${newSku}`);
 	}
 };
+
+/**
+ * Minimal HTML escape for fitting the user's plain-text note into a
+ * <p>...</p> wrapper for the listing's HTML description field. The
+ * full rich-text editor takes over from there.
+ */
+function escapeHtml(s: string): string {
+	return s
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}

@@ -130,6 +130,12 @@
 		adjustNewQty = data.item.stock_qty;
 	});
 
+	// Split-off variant UI state. Only relevant when this item is
+	// stocked + has qty > 0. Opens an inline form below the On hand
+	// panel rather than a modal so the surrounding context stays
+	// visible.
+	let showingSplitOff = $state(false);
+
 	// Recategorize: while the edit form is open the user can pick a
 	// different category. The form-local categoryId drives the
 	// attribute slots' labels/contexts (independently from the saved
@@ -590,6 +596,141 @@
 									type="button"
 									class="btn-ghost px-3 py-1.5 text-xs"
 									onclick={() => (showingAdjust = false)}
+								>
+									Cancel
+								</button>
+							</div>
+						</form>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- PULL ONE OFF AS VARIANT (stocked items with qty > 0) ---- -->
+			<!--
+				The "blemished part" workflow. Pulls 1 unit out of the
+				stocked parent and creates a serialized variant with its
+				own SKU, photos, listings, and price. Draft listings are
+				auto-created for every platform so when eBay / Reverb /
+				Etsy come online, the variant is one click from push.
+			-->
+			{#if data.item.tracking_mode === 'stocked' && data.item.stock_qty > 0 && !data.item.retired_at}
+				<div class="panel px-4 py-3">
+					<div class="flex items-baseline justify-between">
+						<p class="eyebrow">Pull one off</p>
+						{#if !showingSplitOff}
+							<button
+								type="button"
+								class="text-[10px] text-[color:var(--color-gold-bright)] hover:underline"
+								onclick={() => (showingSplitOff = true)}
+							>
+								Start
+							</button>
+						{/if}
+					</div>
+
+					{#if !showingSplitOff}
+						<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
+							One unit is different (blemished, demo, B-stock)? Pull it out into its
+							own variant with its own listing.
+						</p>
+					{:else}
+						<form method="POST" action="?/splitOff" class="space-y-2">
+							{#if form?.splitError}
+								<p class="text-xs text-[color:var(--color-rust-bright)]">{form.splitError}</p>
+							{/if}
+
+							<div class="space-y-1">
+								<label for="variant_reason" class="eyebrow block text-[10px]">
+									What's different?
+								</label>
+								<select
+									id="variant_reason"
+									name="variant_reason"
+									required
+									class="field py-1 text-xs"
+								>
+									<option value="">— pick a label —</option>
+									<option value="Blemished">Blemished (cosmetic damage)</option>
+									<option value="Demo">Demo / Display</option>
+									<option value="Open Box">Open Box</option>
+									<option value="B-Stock">B-Stock</option>
+									<option value="Refurbished">Refurbished</option>
+									<option value="Used">Used</option>
+									<option value="Vintage">Vintage</option>
+									<option value="One of a Kind">One of a Kind</option>
+								</select>
+								<p class="text-[10px] italic text-[color:var(--color-ink-4)]">
+									Becomes the title prefix and a listing tag.
+								</p>
+							</div>
+
+							<div class="space-y-1">
+								<label for="new_condition" class="eyebrow block text-[10px]">
+									Condition
+								</label>
+								<select
+									id="new_condition"
+									name="new_condition"
+									required
+									class="field py-1 text-xs"
+								>
+									<option value={data.item.condition} selected>
+										Same as parent ({data.item.condition === 'N'
+											? 'New'
+											: data.item.condition === 'U'
+												? 'Used'
+												: data.item.condition === 'R'
+													? 'Refurbished'
+													: 'For parts'})
+									</option>
+									<option value="N">New</option>
+									<option value="U">Used</option>
+									<option value="R">Refurbished</option>
+									<option value="B">For parts / broken</option>
+								</select>
+							</div>
+
+							<div class="space-y-1">
+								<label for="variant_note" class="eyebrow block text-[10px]">
+									Note (what's the story?)
+								</label>
+								<textarea
+									id="variant_note"
+									name="variant_note"
+									rows="2"
+									placeholder="e.g. Small paint chip on lower bout, visible in photo 3"
+									class="field py-1 text-xs"
+								></textarea>
+							</div>
+
+							<div class="space-y-1">
+								<label for="variant_price" class="eyebrow block text-[10px]">
+									Price override ($) <span class="lowercase">— optional</span>
+								</label>
+								<input
+									id="variant_price"
+									name="variant_price"
+									type="number"
+									step="0.01"
+									min="0"
+									placeholder={data.item.price_cents != null
+										? (data.item.price_cents / 100).toFixed(2)
+										: ''}
+									class="field py-1 text-xs"
+								/>
+								<p class="text-[10px] italic text-[color:var(--color-ink-4)]">
+									Blank = inherits parent's price. Drop it to mark as a discount.
+								</p>
+							</div>
+
+							<div class="flex gap-2 pt-1">
+								<button type="submit" class="btn-primary px-3 py-1.5 text-xs">
+									Pull one off
+								</button>
+								<button
+									type="button"
+									class="btn-ghost px-3 py-1.5 text-xs"
+									onclick={() => (showingSplitOff = false)}
 								>
 									Cancel
 								</button>

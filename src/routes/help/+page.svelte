@@ -407,6 +407,56 @@
 			`
 		},
 
+		// ---------- Split-off variant -------------------------------
+		{
+			id: 'split-variant',
+			icon: '✂️',
+			title: 'One unit is different (blemished, demo, etc.)',
+			subtitle: "Pulling one off as its own variant + listing",
+			content: `
+				<p><strong>The scenario:</strong> You have 12 strat bodies in stock, all identical. One
+				of them has a small paint chip. You want to sell that one separately — own listing, own
+				photo, maybe a discount — without losing track of the other 11.</p>
+
+				${steps([
+					`Open the parent item's detail page (the stocked one with all the units).`,
+					`Right sidebar, between the On hand panel and Category panel: the <strong>Pull one off</strong> panel. Click ${btnGhost('Start')}.`,
+					`<strong>What's different?</strong> — pick a label that describes why this unit is being separated:
+						<ul style="margin-top: 6px; font-size: 13px;">
+							<li><em>Blemished</em> — cosmetic damage</li>
+							<li><em>Demo / Display</em> — showed at a gig or shop</li>
+							<li><em>Open Box</em> — opened but unused</li>
+							<li><em>B-Stock</em> — generic discount label</li>
+							<li><em>Refurbished</em> — repaired</li>
+							<li><em>Used</em> — sold and came back</li>
+							<li><em>Vintage</em> — older stock</li>
+							<li><em>One of a Kind</em> — custom finish, special</li>
+						</ul>`,
+					`<strong>Condition</strong> — usually "Same as parent" is right (a blemished new body is still <em>New</em> in the technical sense). Drop to Used / Refurbished / For parts only if it really is.`,
+					`<strong>Note</strong> — short description of what's specific to this unit. Becomes the variant's description and goes onto the listing. e.g. "Small paint chip on lower bout, visible in photo 3".`,
+					`<strong>Price override</strong> — optional. Leave blank to inherit the parent's price; enter a lower amount if you want it marked as a discount on the website.`,
+					`Click ${btnPrimary('Pull one off')}. You'll land on the new variant's page.`
+				])}
+
+				${callout('💡', "The new variant gets its own SKU (same category/brand/model but new sequence + condition codes). The parent's quantity drops by 1 automatically, and both sides of the split show up in each item's Provenance ledger.")}
+
+				<p style="margin-top: 18px;"><strong>What's pre-built for you:</strong></p>
+				<ul>
+					<li>The variant's <strong>title</strong> gets the reason as a prefix — e.g. "Blemished — Stratocaster Style Body, Brand New / Olympic White".</li>
+					<li>A <strong>draft Squarespace listing</strong> is created and ready to push — the title and tags are pre-populated; you just add photos, pick the storefront page, and hit Push.</li>
+					<li>Draft listings for <strong>eBay, Reverb, and Etsy</strong> are also pre-created with the same content, so when those platforms come online later, the variant's listings are already waiting.</li>
+					<li>Listing <strong>tags</strong> include the reason (e.g. "blemished") and "sale" so you can later filter or route them into a Special Value collection on the storefront.</li>
+				</ul>
+
+				${callout('💡', "After pulling off: head to the variant's page, drop some photos showing the blemish, and tweak the listing title/description. The parent and its remaining quantity are untouched.")}
+
+				<p style="margin-top: 18px;"><strong>Where to see all variants of a parent:</strong></p>
+				<p>On the parent's detail page, below the Description section, there's a <strong>Variants</strong>
+				section listing every child variant pulled off — with their SKUs, what makes each one
+				different, and current stock. Click any one to open it.</p>
+			`
+		},
+
 		// ---------- Transferring ------------------------------------
 		{
 			id: 'move',
