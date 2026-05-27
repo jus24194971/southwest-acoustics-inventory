@@ -12,6 +12,7 @@ import {
 	listStorePages,
 	createProduct,
 	updateProduct,
+	uploadProductImage,
 	SquarespaceError,
 	type SquarespaceProductWritePayload
 } from '$lib/server/squarespace';
@@ -396,7 +397,68 @@ export const actions: Actions = {
 				? await updateProduct(apiKey, existing!.external_id!, payload)
 				: await createProduct(apiKey, payload);
 
+			// ---- Photo upload (new products only) -----------------
+			// SS doesn't accept image URLs in the product payload, and
+			// our R2 photos live behind Cloudflare Access — even if it
+			// did, SS couldn't fetch them. So new products need their
+			// photos uploaded explicitly as multipart binary.
+			//
+			// Updates skip this step: re-uploading on every update
+			// would create duplicates on SS. If photos need refreshing
+			// later we'll add a dedicated "Re-push photos" action.
+			//
+			// Best-effort: a photo failure logs an error but doesn't
+			// fail the whole push. The product is already created at
+			// this point, and partial photos beats no listing.
+			const photoUploadErrors: string[] = [];
+			let photosUploaded = 0;
+			if (!isUpdate) {
+				const r2 = event.platform?.env?.PHOTOS;
+				const photoRows = await db
+					.prepare(
+						`SELECT r2_key, content_type
+						 FROM item_photo
+						 WHERE item_id = ? AND deleted_at IS NULL
+						 ORDER BY position, id
+						 LIMIT 20`
+					)
+					.bind(item.id)
+					.all<{ r2_key: string; content_type: string | null }>();
+
+				if (r2 && photoRows.results.length > 0) {
+					for (const photo of photoRows.results) {
+						try {
+							const obj = await r2.get(photo.r2_key);
+							if (!obj) {
+								photoUploadErrors.push(`${photo.r2_key}: not in R2`);
+								continue;
+							}
+							const bytes = await obj.arrayBuffer();
+							const ct =
+								photo.content_type ??
+								obj.httpMetadata?.contentType ??
+								'image/jpeg';
+							const filename =
+								photo.r2_key.split('/').pop() ?? 'photo.jpg';
+							await uploadProductImage(apiKey, result.id, bytes, ct, filename);
+							photosUploaded++;
+						} catch (err) {
+							const msg = err instanceof SquarespaceError
+								? `HTTP ${err.httpStatus}: ${err.body.slice(0, 120)}`
+								: err instanceof Error
+									? err.message
+									: String(err);
+							photoUploadErrors.push(`${photo.r2_key}: ${msg}`);
+						}
+					}
+				}
+			}
+
 			const firstVariant = result.variants?.[0];
+			// Sync status reflects the product push only — photo
+			// failures get separately surfaced via the redirect param
+			// so the listing isn't marked "error" just because one
+			// photo failed.
 			await recordSyncResult(db, item.id, 'squarespace', {
 				externalId: result.id,
 				externalVariantId: firstVariant?.id ?? null,
@@ -405,10 +467,23 @@ export const actions: Actions = {
 					: null,
 				status: parsed.visible === 1 ? 'live' : 'paused',
 				syncStatus: 'ok',
-				syncError: null
+				syncError:
+					photoUploadErrors.length > 0
+						? `Listing pushed ok, but ${photoUploadErrors.length} photo(s) failed: ${photoUploadErrors.slice(0, 3).join('; ')}`
+						: null
 			});
 
-			throw redirect(303, `/items/${event.params.sku}/listings/squarespace?pushed=1`);
+			const params = new URLSearchParams({ pushed: '1' });
+			if (photosUploaded > 0) params.set('photos', String(photosUploaded));
+			if (photoUploadErrors.length > 0)
+				params.set(
+					'photo_warn',
+					`${photoUploadErrors.length} of ${photosUploaded + photoUploadErrors.length} photos failed to upload`
+				);
+			throw redirect(
+				303,
+				`/items/${event.params.sku}/listings/squarespace?${params.toString()}`
+			);
 		} catch (err) {
 			// SvelteKit's `redirect` throws a control-flow object — let it
 			// bubble. Real errors get recorded + returned.

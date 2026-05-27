@@ -251,3 +251,55 @@ export async function updateProduct(
 	if (!res.ok) throw new SquarespaceError(res.status, body);
 	return JSON.parse(body) as SquarespaceProduct;
 }
+
+/**
+ * Upload a single product image as multipart/form-data. SS processes
+ * images asynchronously — the endpoint typically returns 202 Accepted
+ * with an image-upload reference; the actual image becomes available
+ * on the product a few seconds later once their pipeline finishes.
+ *
+ * Docs: https://developers.squarespace.com/commerce-apis/upload-a-product-image
+ *
+ * The Products API doesn't accept image URLs in the product payload
+ * (Reverb does, Squarespace doesn't), and our R2 photos live behind
+ * Cloudflare Access so even if it did, SS couldn't fetch them. So
+ * pushing photos is necessarily a binary upload per photo.
+ *
+ * Each call is one Workers subrequest. Free-tier Workers cap at 50
+ * subrequests per invocation, so the caller should keep the photo
+ * batch comfortably under that.
+ */
+export async function uploadProductImage(
+	apiKey: string,
+	productId: string,
+	imageBytes: ArrayBuffer,
+	contentType: string,
+	filename: string
+): Promise<{ imageId?: string; status?: string }> {
+	const url = `${BASE_URL}/commerce/products/${encodeURIComponent(productId)}/image`;
+
+	const form = new FormData();
+	form.append('file', new Blob([imageBytes], { type: contentType }), filename);
+
+	const res = await fetch(url, {
+		method: 'POST',
+		headers: {
+			// Don't set content-type here — FormData sets it with the
+			// multipart boundary. Hand-rolling that boundary is the
+			// number-one footgun on this endpoint.
+			...authHeaders(apiKey)
+		},
+		body: form
+	});
+
+	const body = await res.text();
+	if (!res.ok) throw new SquarespaceError(res.status, body);
+
+	// SS returns JSON on 202 Accepted with an upload reference. Some
+	// images may return an empty body — defensive parse.
+	try {
+		return JSON.parse(body) as { imageId?: string; status?: string };
+	} catch {
+		return {};
+	}
+}

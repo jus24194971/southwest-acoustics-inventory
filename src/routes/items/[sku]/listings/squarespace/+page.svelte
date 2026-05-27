@@ -348,12 +348,24 @@
 		<div class="panel px-4 py-3" style="border-color: var(--color-moss)">
 			<p class="text-sm text-[color:var(--color-moss-bright)]">
 				Pushed to Squarespace successfully.
+				{#if page.url.searchParams.get('photos')}
+					{page.url.searchParams.get('photos')} photo(s) uploaded.
+				{/if}
 			</p>
+			{#if page.url.searchParams.get('photo_warn')}
+				<p class="mt-1 text-xs text-[color:var(--color-gold-bright)]">
+					⚠ {page.url.searchParams.get('photo_warn')}. See the "Last sync" notes below for details.
+				</p>
+			{/if}
 			{#if data.listing?.external_id}
 				<p class="mt-1 font-mono text-xs text-[color:var(--color-ink-3)]">
 					external id: {data.listing.external_id}
 				</p>
 			{/if}
+			<p class="mt-1 text-[11px] italic text-[color:var(--color-ink-3)]">
+				Photos take a few seconds to appear — Squarespace processes them asynchronously after
+				upload.
+			</p>
 		</div>
 	{/if}
 
