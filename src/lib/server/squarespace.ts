@@ -203,13 +203,18 @@ export interface SquarespaceProductWritePayload {
 		// variant under shippingMeasurements. SS uses these for any
 		// weight-based shipping rules on Dad's store. Omit when we
 		// don't have it — SS treats it as "no specific weight".
+		//
+		// IMPORTANT: SS only accepts the literal strings POUND or
+		// KILOGRAM for weight unit, and INCH or CENTIMETER for
+		// dimension unit. They reject "oz", "lb", "in" etc. — we
+		// convert ounces → pounds at the call site (oz / 16).
 		shippingMeasurements?: {
-			weight?: { value: number; unit: 'oz' | 'lb' | 'g' | 'kg' };
+			weight?: { value: number; unit: 'POUND' | 'KILOGRAM' };
 			dimensions?: {
 				length: number;
 				width: number;
 				height: number;
-				unit: 'in' | 'cm';
+				unit: 'INCH' | 'CENTIMETER';
 			};
 		};
 	}>;

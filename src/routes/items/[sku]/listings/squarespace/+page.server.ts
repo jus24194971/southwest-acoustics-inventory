@@ -353,8 +353,14 @@ export const actions: Actions = {
 			stock: { quantity: finalQty, unlimited: false }
 		};
 		if (parsed.weightOz != null && parsed.weightOz > 0) {
+			// SS only accepts POUND / KILOGRAM as the unit literal
+			// (their API enum). We store oz in the DB for Dad's
+			// convenience and convert here. Round to 3 decimals so
+			// fractional ounces stay precise without floating-point
+			// noise in the payload.
+			const weightLb = Math.round((parsed.weightOz / 16) * 1000) / 1000;
 			variantPayload.shippingMeasurements = {
-				weight: { value: parsed.weightOz, unit: 'oz' }
+				weight: { value: weightLb, unit: 'POUND' }
 			};
 		}
 
