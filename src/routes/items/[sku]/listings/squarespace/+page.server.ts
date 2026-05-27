@@ -183,7 +183,14 @@ export const actions: Actions = {
 		const finalDesc = parsed.descriptionHtml || item.description_html || '';
 		const finalSlug = parsed.urlSlug || defaultSlug(finalName);
 		const finalPriceCents = parsed.priceCents ?? item.price_cents ?? 0;
-		const finalQty = item.tracking_mode === 'stocked' ? item.stock_qty : 1;
+		// Stock comes from the item's actual stock_qty for BOTH tracking
+		// modes — serialized listings now live in 0..1, where 0 means
+		// "out of stock, keep listing visible as Sold Out". Squarespace's
+		// default storefront behavior with isVisible=true + qty=0 is to
+		// render a "Sold Out" badge, which is exactly Dad's collection
+		// display use case. (Previously we always pushed 1 for serialized
+		// — bug that hid out-of-stock listings from the storefront.)
+		const finalQty = item.stock_qty;
 
 		const payload: SquarespaceProductWritePayload = {
 			type: 'PHYSICAL',

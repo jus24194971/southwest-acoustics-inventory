@@ -107,6 +107,50 @@ export async function listProducts(
 }
 
 // =====================================================================
+// Inventory API.
+//
+// Separate from the Products API — the inventory endpoint returns
+// stock data per variant in a tight, paginated format. Useful for a
+// fast stock-only sync without re-fetching every product's images and
+// description.
+//
+// Docs: https://developers.squarespace.com/commerce-apis/inventory-api-overview
+// =====================================================================
+
+export interface SquarespaceInventoryEntry {
+	variantId: string;
+	sku: string;
+	quantity: number;
+	isUnlimited: boolean;
+	descriptor?: string;
+}
+
+interface InventoryListResponse {
+	inventory: SquarespaceInventoryEntry[];
+	pagination: {
+		hasNextPage: boolean;
+		nextPageCursor?: string;
+		nextPageUrl?: string;
+	};
+}
+
+/** Fetch one page of inventory entries. `cursor` is the pagination
+ *  cursor from a previous response; omit for the first page. The
+ *  Inventory scope on the API key is required for this endpoint. */
+export async function listInventory(
+	apiKey: string,
+	options: { cursor?: string } = {}
+): Promise<InventoryListResponse> {
+	const url = new URL(`${BASE_URL}/commerce/inventory`);
+	if (options.cursor) url.searchParams.set('cursor', options.cursor);
+
+	const res = await fetch(url.toString(), { headers: authHeaders(apiKey) });
+	const body = await res.text();
+	if (!res.ok) throw new SquarespaceError(res.status, body);
+	return JSON.parse(body) as InventoryListResponse;
+}
+
+// =====================================================================
 // Store pages — Dad's storefronts. We need these for the SS storePageId
 // when creating new products. Cached client-side once fetched.
 // =====================================================================

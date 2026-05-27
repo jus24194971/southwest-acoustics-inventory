@@ -373,9 +373,19 @@
 			<div class="space-y-0.5">
 				<span class="text-sm font-medium text-[color:var(--color-ink)]">Visible on Squarespace</span>
 				<p class="text-[11px] text-[color:var(--color-ink-3)]">
-					When pushed, this controls Squarespace's <span class="font-mono">isVisible</span> flag.
-					Uncheck to push as hidden / paused.
+					Controls whether the listing shows on the shop at all.
+					<strong class="text-[color:var(--color-ink-2)]">When checked and on hand &gt; 0</strong>:
+					customers see it as live and buyable.
+					<strong class="text-[color:var(--color-ink-2)]">When checked and on hand = 0</strong>:
+					Squarespace shows a "Sold Out" badge — keeps the listing in your collection so customers
+					see what you've had / could get again. Uncheck to hide it entirely.
 				</p>
+				{#if data.item.stock_qty === 0}
+					<p class="text-[11px] text-[color:var(--color-gold-bright)]">
+						This item is out of stock ({data.item.tracking_mode}). It will push to Squarespace
+						as qty=0 — visible as Sold Out if the checkbox above is on.
+					</p>
+				{/if}
 			</div>
 		</label>
 

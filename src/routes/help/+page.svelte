@@ -545,11 +545,20 @@
 					`<strong>Listing price</strong> — leave blank to use the item's internal price, or override with a different price for the website.`,
 					`<strong>Tags</strong> — comma-separated, optional. Helps with website search.`,
 					`<strong>Squarespace storefront</strong> — pick which page of your shop it goes on (e.g. "Leo Jaymz Guitars" or "Parts and Accessories").`,
-					`<strong>Visible on Squarespace</strong> — checked means live and visible. Uncheck to push as hidden/paused.`,
+					`<strong>Visible on Squarespace</strong> — checked means the listing shows on your shop. When the item is on hand &gt; 0 it shows as live and buyable; when on hand = 0 Squarespace shows a "Sold Out" badge automatically (still visible to customers — that's how the collection of "I might get this again" stays on your site). Uncheck to hide the listing entirely.`,
 					`Bottom: two save buttons (${btnGhost('Save as draft')} or ${btnGhost('Save as ready')}) just save locally without pushing. The push button is on the right: ${btnPrimary('Push to Squarespace')}.`
 				])}
 
-				${callout('💡', `If this is the first time pushing this item, Squarespace creates a new product. If it's already on Squarespace, "Push" updates the existing one — title, description, price, etc.`)}
+				${callout('💡', `If this is the first time pushing this item, Squarespace creates a new product. If it's already on Squarespace, "Push" updates the existing one — title, description, price, on-hand qty, etc.`)}
+
+				${callout('💡', `To show out-of-stock items as part of a collection (still visible with a Sold Out badge), keep "Visible on Squarespace" checked. Adjusting on hand to 0 in the app and pushing is enough — Squarespace handles the Sold Out display automatically.`)}
+
+				<p style="margin-top: 18px;"><strong>If something already sold on Squarespace and the count is wrong here:</strong></p>
+				<p>Go to <a href="/import/squarespace">/import/squarespace</a> and click
+				${btnGhost('Sync stock from Squarespace')}. It pulls the current per-variant stock counts
+				from Squarespace and updates our DB, writing audit entries for each change. Quick — no
+				re-fetching descriptions or photos. Run this whenever the Squarespace storefront sold
+				something without going through the app.</p>
 
 				<p style="margin-top: 18px;"><strong>The status pill at the top tells you what state the listing is in:</strong></p>
 				<ul style="line-height: 2;">

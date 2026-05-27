@@ -3,7 +3,8 @@
 	import type {
 		BackfillResult,
 		BatchResult,
-		ImportError
+		ImportError,
+		StockSyncResult
 	} from '$lib/server/squarespace_import';
 
 	let { data }: { data: PageData } = $props();
@@ -64,6 +65,31 @@
 			log = [...log, { kind: 'error', message: err instanceof Error ? err.message : String(err) }];
 		} finally {
 			running = false;
+		}
+	}
+
+	// Dedicated stock-only sync — one fast call, no looping. Uses the
+	// thin Inventory API rather than re-walking the full Products feed.
+	let syncingStock = $state(false);
+	let stockSyncResult = $state<StockSyncResult | null>(null);
+	let stockSyncError = $state<string | null>(null);
+
+	async function syncStock() {
+		syncingStock = true;
+		stockSyncResult = null;
+		stockSyncError = null;
+		try {
+			const res = await fetch('/api/import/squarespace/sync-stock', { method: 'POST' });
+			if (!res.ok) {
+				const text = await res.text();
+				stockSyncError = `Server returned ${res.status}: ${text.slice(0, 300)}`;
+				return;
+			}
+			stockSyncResult = (await res.json()) as StockSyncResult;
+		} catch (err) {
+			stockSyncError = err instanceof Error ? err.message : String(err);
+		} finally {
+			syncingStock = false;
 		}
 	}
 
@@ -198,6 +224,14 @@
 					<button class="btn-ghost" onclick={startBackfill} disabled={running}>
 						Backfill missing photos
 					</button>
+					<button
+						class="btn-ghost"
+						onclick={syncStock}
+						disabled={running || syncingStock}
+						title="Pull current stock counts from Squarespace into our DB"
+					>
+						{syncingStock ? 'Syncing stock…' : 'Sync stock from Squarespace'}
+					</button>
 				{/if}
 				{#if running}
 					<span class="eyebrow text-[color:var(--color-gold-bright)]"
@@ -208,13 +242,81 @@
 
 			<p class="mt-3 text-xs italic text-[color:var(--color-ink-3)]">
 				<strong class="not-italic text-[color:var(--color-ink-2)]">Import</strong> creates new
-				items + refreshes metadata. <strong class="not-italic text-[color:var(--color-ink-2)]"
-					>Backfill</strong
-				>
+				items + refreshes metadata.
+				<strong class="not-italic text-[color:var(--color-ink-2)]">Backfill</strong>
 				re-scans the catalog for items that have fewer photos than Squarespace has and fetches the
-				missing ones. Both batch into ~5–40 photos per server call to stay under Cloudflare's
-				per-invocation subrequest limit.
+				missing ones.
+				<strong class="not-italic text-[color:var(--color-ink-2)]">Sync stock</strong>
+				is the fastest path: pulls only the current per-variant counts from the Inventory API and
+				updates our <span class="font-mono">stock_qty</span> + writes an audit movement for each
+				change. Anything marked sold out on Squarespace gets reflected as qty=0 here.
 			</p>
+
+			<!-- Stock sync results panel — separate from the import log so a
+				 quick sync doesn't get buried in batch noise. -->
+			{#if stockSyncError}
+				<div
+					class="mt-4 rounded border border-[color:var(--color-rust)] bg-[color:var(--color-input)] px-4 py-3"
+				>
+					<p class="eyebrow text-[color:var(--color-rust-bright)]">Stock sync error</p>
+					<p class="mt-1 text-xs">{stockSyncError}</p>
+				</div>
+			{:else if stockSyncResult}
+				<div
+					class="mt-4 rounded border border-[color:var(--color-moss)] bg-[color:var(--color-input)] px-4 py-3"
+				>
+					<p class="eyebrow text-[color:var(--color-moss-bright)]">Stock sync complete</p>
+					<div
+						class="mt-2 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 md:grid-cols-5"
+					>
+						<div>
+							<span class="eyebrow text-[10px]">Updated</span>
+							<p class="font-mono text-xl text-[color:var(--color-gold-bright)]">
+								{stockSyncResult.itemsUpdated}
+							</p>
+						</div>
+						<div>
+							<span class="eyebrow text-[10px]">No change</span>
+							<p class="font-mono text-xl text-[color:var(--color-ink-2)]">
+								{stockSyncResult.noChange}
+							</p>
+						</div>
+						<div>
+							<span class="eyebrow text-[10px]">Scanned</span>
+							<p class="font-mono text-xl text-[color:var(--color-ink-2)]">
+								{stockSyncResult.entriesScanned}
+							</p>
+						</div>
+						<div>
+							<span class="eyebrow text-[10px]">Unknown variants</span>
+							<p class="font-mono text-xl text-[color:var(--color-ink-3)]"
+								title="Variants in SS that aren't imported yet — run Import to fetch them.">
+								{stockSyncResult.unknownVariants}
+							</p>
+						</div>
+						<div>
+							<span class="eyebrow text-[10px]">Skipped (unlimited)</span>
+							<p class="font-mono text-xl text-[color:var(--color-ink-3)]"
+								title="SS variants marked as unlimited stock — we ignore these.">
+								{stockSyncResult.skippedUnlimited}
+							</p>
+						</div>
+					</div>
+					{#if stockSyncResult.errors.length > 0}
+						<p class="mt-3 text-xs text-[color:var(--color-rust-bright)]">
+							{stockSyncResult.errors.length} error{stockSyncResult.errors.length === 1 ? '' : 's'} — see below
+						</p>
+						<ul class="mt-1 space-y-1 text-xs">
+							{#each stockSyncResult.errors as e (e.context)}
+								<li>
+									<span class="font-mono text-[color:var(--color-ink-3)]">{e.context}</span>
+									— {e.error}
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			{/if}
 
 			{#if log.length > 0 || aggregate.created > 0 || aggregate.updated > 0}
 				<div class="mt-5 space-y-3">

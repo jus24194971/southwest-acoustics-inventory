@@ -28,8 +28,27 @@
  */
 
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
-import { listProducts, type SquarespaceProduct, type SquarespaceVariant } from './squarespace';
+import {
+	listProducts,
+	listInventory,
+	type SquarespaceProduct,
+	type SquarespaceVariant
+} from './squarespace';
 import { generateSku, normaliseModelCode } from './sku';
+
+/**
+ * Resolve the stock_qty we should record for a given Squarespace
+ * variant. Rules:
+ *   - If SS reports a finite quantity, use it (including 0).
+ *   - If SS marks the variant as unlimited or omits stock entirely,
+ *     default to 1 — Dad's catalog is physical, so "unlimited" is
+ *     almost always a misconfigured SS variant we shouldn't echo.
+ */
+function stockQtyFromVariant(variant: SquarespaceVariant): number {
+	const stock = variant.stock;
+	if (!stock || stock.unlimited) return 1;
+	return Math.max(0, Math.floor(stock.quantity));
+}
 
 /** Items in this category are the fallback bucket — Dad recategorises
  *  after import via the (still-to-be-built) item detail page. */
@@ -203,16 +222,51 @@ async function updateExisting(
 	const nowIso = new Date().toISOString();
 	const priceCents = parsePriceCents(variant);
 	const descriptionText = stripHtml(product.description ?? '');
+	const ssQty = stockQtyFromVariant(variant);
+
+	// Read the current qty so we can log a movement only if it changed —
+	// avoids spamming the ledger with no-op "synced from SS" entries.
+	const current = await db
+		.prepare(`SELECT stock_qty FROM item WHERE id = ?`)
+		.bind(itemId)
+		.first<{ stock_qty: number }>();
 
 	await db
 		.prepare(
 			`UPDATE item
 			 SET title = ?, description = ?, description_html = ?, price_cents = ?,
+			     stock_qty = ?,
 			     squarespace_synced_at = ?, updated_at = ?
 			 WHERE id = ?`
 		)
-		.bind(product.name, descriptionText, product.description ?? '', priceCents, nowIso, nowIso, itemId)
+		.bind(
+			product.name,
+			descriptionText,
+			product.description ?? '',
+			priceCents,
+			ssQty,
+			nowIso,
+			nowIso,
+			itemId
+		)
 		.run();
+
+	if (current && current.stock_qty !== ssQty) {
+		const delta = ssQty - current.stock_qty;
+		const dir = delta > 0 ? 'up' : 'down';
+		await db
+			.prepare(
+				`INSERT INTO movement (item_id, kind, quantity, note, actor, reference)
+				 VALUES (?, 'adjust', ?, ?, 'squarespace-import', ?)`
+			)
+			.bind(
+				itemId,
+				Math.abs(delta),
+				`Stock synced from Squarespace: ${current.stock_qty} → ${ssQty} (${dir} ${Math.abs(delta)})`,
+				product.id
+			)
+			.run();
+	}
 }
 
 async function createNew(
@@ -239,15 +293,18 @@ async function createNew(
 		yearReceived: currentYear
 	});
 
+	const ssQty = stockQtyFromVariant(variant);
+
 	const insert = await db
 		.prepare(
 			`INSERT INTO item (
 				sku, title, description, description_html,
 				category_id, condition, year_received, price_cents,
+				stock_qty,
 				squarespace_product_id, squarespace_variant_id, squarespace_sku,
 				squarespace_synced_at, created_at, updated_at
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			RETURNING id`
 		)
 		.bind(
@@ -259,6 +316,7 @@ async function createNew(
 			'N',
 			currentYear,
 			priceCents,
+			ssQty,
 			product.id,
 			variant.id,
 			variant.sku ?? null,
@@ -489,6 +547,145 @@ export async function backfillMissingPhotos(
 	// products. If `exhausted` is true and we didn't trigger it via the
 	// budget pre-check, we're truly done.
 	result.hasMore = result.photosAdded >= maxPhotosToFetch;
+
+	return result;
+}
+
+// =========================================================================
+// Stock sync (Squarespace → us)
+// =========================================================================
+//
+// Uses the dedicated Inventory API (much lighter than re-running the full
+// import) to pull current per-variant stock and write it back to our DB.
+// Pages through everything in one call — the inventory endpoint returns
+// tight JSON (variantId + qty + flags only, no descriptions or photos),
+// so a few hundred entries easily fit under the Workers subrequest budget.
+//
+// For each entry:
+//   - If the SS variant matches a known item (squarespace_variant_id),
+//     update stock_qty and write a 'adjust' movement so the audit trail
+//     shows the sync.
+//   - Variants marked "unlimited" are skipped (left at whatever we have)
+//     because Dad's catalog is physical; unlimited is almost always a
+//     misconfigured SS variant we shouldn't echo as zero.
+//   - Variants we don't recognize are tallied as `unknown` — typically
+//     means the product hasn't been imported yet.
+//
+// Idempotent: re-running when nothing changed writes no movements.
+
+export interface StockSyncResult {
+	pagesFetched: number;
+	entriesScanned: number;
+	itemsUpdated: number;
+	noChange: number;
+	skippedUnlimited: number;
+	unknownVariants: number;
+	errors: ImportError[];
+}
+
+export async function syncStockFromSquarespace(
+	db: D1Database,
+	apiKey: string
+): Promise<StockSyncResult> {
+	const result: StockSyncResult = {
+		pagesFetched: 0,
+		entriesScanned: 0,
+		itemsUpdated: 0,
+		noChange: 0,
+		skippedUnlimited: 0,
+		unknownVariants: 0,
+		errors: []
+	};
+
+	let cursor: string | undefined;
+	// Hard cap on pages walked per invocation. Each page is ~50 entries
+	// so 20 pages = 1000 variants — well beyond Dad's catalog size and
+	// safely under the Workers 50-subrequest budget. The inventory
+	// endpoint is one subrequest per page; each DB op is a binding call
+	// (not a subrequest), so the math works out.
+	const MAX_PAGES = 20;
+
+	while (result.pagesFetched < MAX_PAGES) {
+		let page;
+		try {
+			page = await listInventory(apiKey, { cursor });
+		} catch (err) {
+			result.errors.push({
+				context: `inventory page ${result.pagesFetched + 1}`,
+				error: err instanceof Error ? err.message : String(err)
+			});
+			break;
+		}
+		result.pagesFetched++;
+
+		for (const entry of page.inventory) {
+			result.entriesScanned++;
+
+			if (entry.isUnlimited) {
+				result.skippedUnlimited++;
+				continue;
+			}
+
+			const item = await db
+				.prepare(
+					`SELECT id, stock_qty FROM item
+					 WHERE squarespace_variant_id = ? AND deleted_at IS NULL`
+				)
+				.bind(entry.variantId)
+				.first<{ id: number; stock_qty: number }>();
+
+			if (!item) {
+				result.unknownVariants++;
+				continue;
+			}
+
+			const newQty = Math.max(0, Math.floor(entry.quantity));
+			if (item.stock_qty === newQty) {
+				result.noChange++;
+				continue;
+			}
+
+			try {
+				const delta = newQty - item.stock_qty;
+				const dir = delta > 0 ? 'up' : 'down';
+				const nowIso = new Date().toISOString();
+
+				await db.batch([
+					db
+						.prepare(
+							`UPDATE item SET stock_qty = ?, squarespace_synced_at = ?, updated_at = ?
+							 WHERE id = ?`
+						)
+						.bind(newQty, nowIso, nowIso, item.id),
+
+					db
+						.prepare(
+							`INSERT INTO movement (item_id, kind, quantity, note, actor, reference)
+							 VALUES (?, 'adjust', ?, ?, 'squarespace-stock-sync', ?)`
+						)
+						.bind(
+							item.id,
+							Math.abs(delta),
+							`Stock synced from Squarespace: ${item.stock_qty} → ${newQty} (${dir} ${Math.abs(delta)})`,
+							entry.variantId
+						)
+				]);
+
+				result.itemsUpdated++;
+			} catch (err) {
+				result.errors.push({
+					context: `sku ${entry.sku} (variant ${entry.variantId})`,
+					error: err instanceof Error ? err.message : String(err)
+				});
+			}
+		}
+
+		if (page.pagination.hasNextPage && page.pagination.nextPageCursor) {
+			cursor = page.pagination.nextPageCursor;
+		} else {
+			break;
+		}
+	}
 
 	return result;
 }
