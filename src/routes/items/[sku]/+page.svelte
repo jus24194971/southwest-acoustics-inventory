@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { page } from '$app/state';
 	import type { PageData, ActionData } from './$types';
 	import AttributeValueSelect from '$lib/components/AttributeValueSelect.svelte';
 
@@ -232,20 +233,27 @@
 					No photos yet
 				</div>
 			{:else}
-				<div class="panel overflow-hidden">
+				<div class="panel relative overflow-hidden">
 					<img
 						src="/api/photos/{activePhoto?.r2_key ?? primaryPhoto.r2_key}"
 						alt={activePhoto?.alt_text ?? data.item.title}
 						class="aspect-square w-full bg-[color:var(--color-input)] object-contain"
 					/>
+					{#if activePhotoIndex === 0}
+						<span
+							class="absolute left-2 top-2 rounded bg-[color:var(--color-gold)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--color-bg)]"
+						>
+							Primary
+						</span>
+					{/if}
 				</div>
-				{#if extraPhotos.length > 0}
+				{#if extraPhotos.length > 0 || data.photos.length > 1}
 					<div class="grid grid-cols-6 gap-2">
 						{#each data.photos as photo, i (photo.id)}
 							<button
 								type="button"
 								onclick={() => (activePhotoIndex = i)}
-								class="aspect-square overflow-hidden rounded border bg-[color:var(--color-input)] transition-colors {i ===
+								class="relative aspect-square overflow-hidden rounded border bg-[color:var(--color-input)] transition-colors {i ===
 								activePhotoIndex
 									? 'border-[color:var(--color-gold)]'
 									: 'border-[color:var(--color-line-dim)] hover:border-[color:var(--color-line-bright)]'}"
@@ -256,11 +264,112 @@
 									class="h-full w-full object-cover"
 									loading="lazy"
 								/>
+								{#if i === 0}
+									<span
+										class="absolute right-0.5 top-0.5 rounded bg-[color:var(--color-gold)] px-1 text-[8px] font-bold uppercase text-[color:var(--color-bg)]"
+									>
+										★
+									</span>
+								{/if}
 							</button>
 						{/each}
 					</div>
 				{/if}
 			{/if}
+
+			<!-- Photo management — upload, set primary, delete -->
+			<div class="panel space-y-3 px-4 py-3">
+				<p class="eyebrow">Manage photos</p>
+
+				{#if form?.photoError}
+					<p class="text-xs text-[color:var(--color-rust-bright)]">{form.photoError}</p>
+				{/if}
+				{#if page.url.searchParams.get('photo_warn')}
+					<p class="text-xs text-[color:var(--color-gold-bright)]">
+						{page.url.searchParams.get('photo_warn')}
+					</p>
+				{/if}
+
+				<form
+					method="POST"
+					action="?/uploadPhotos"
+					enctype="multipart/form-data"
+					class="space-y-2"
+				>
+					<label
+						for="photo_upload"
+						class="block cursor-pointer rounded border border-dashed border-[color:var(--color-line)] bg-[color:var(--color-input)] px-3 py-4 text-center text-xs text-[color:var(--color-ink-2)] transition-colors hover:border-[color:var(--color-gold-dim)] hover:text-[color:var(--color-ink)]"
+					>
+						<span class="block font-medium">📷 Choose photos to upload</span>
+						<span class="mt-1 block text-[10px] italic text-[color:var(--color-ink-3)]">
+							JPG / PNG / WEBP · up to 15MB each · 20 at a time
+						</span>
+					</label>
+					<input
+						id="photo_upload"
+						type="file"
+						name="photos"
+						accept="image/jpeg,image/png,image/webp,image/gif"
+						multiple
+						required
+						class="hidden"
+						onchange={(e) => {
+							const target = e.currentTarget as HTMLInputElement;
+							if (target.files && target.files.length > 0) {
+								target.form?.requestSubmit();
+							}
+						}}
+					/>
+					<noscript>
+						<button type="submit" class="btn-primary w-full px-3 py-1.5 text-xs">
+							Upload selected
+						</button>
+					</noscript>
+				</form>
+
+				{#if data.photos.length > 0}
+					<div class="space-y-1.5 border-t border-[color:var(--color-line-dim)] pt-3">
+						<p class="text-[10px] uppercase tracking-wide text-[color:var(--color-ink-4)]">
+							Selected: photo {activePhotoIndex + 1} of {data.photos.length}
+						</p>
+						<div class="flex gap-2">
+							{#if activePhotoIndex !== 0}
+								<form method="POST" action="?/makePrimaryPhoto" class="flex-1">
+									<input
+										type="hidden"
+										name="photo_id"
+										value={activePhoto?.id ?? data.photos[0].id}
+									/>
+									<button type="submit" class="btn-ghost w-full px-3 py-1.5 text-xs">
+										★ Make primary
+									</button>
+								</form>
+							{/if}
+							<form
+								method="POST"
+								action="?/deletePhoto"
+								class="flex-1"
+								onsubmit={(e) => {
+									if (!confirm('Delete this photo?')) e.preventDefault();
+								}}
+							>
+								<input
+									type="hidden"
+									name="photo_id"
+									value={activePhoto?.id ?? data.photos[0].id}
+								/>
+								<button
+									type="submit"
+									class="btn-ghost w-full px-3 py-1.5 text-xs"
+									style="color: var(--color-rust-bright)"
+								>
+									✕ Delete
+								</button>
+							</form>
+						</div>
+					</div>
+				{/if}
+			</div>
 		</div>
 
 		<!-- Sidebar: location, pricing, category, actions -->

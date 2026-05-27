@@ -575,5 +575,198 @@ export const actions: Actions = {
 		]);
 
 		throw redirect(303, `/items/${item.sku}`);
+	},
+
+	// ============================================================
+	// Photo management
+	// ============================================================
+	//
+	// Photos live in R2 under the key pattern `items/<id>/<random>.<ext>`
+	// with a one-to-many DB row in item_photo. The bucket is private —
+	// the /api/photos/<key> proxy is what actually returns image bytes
+	// to <img> tags, so all access stays behind Cloudflare Access.
+	//
+	// Soft-delete only: setting deleted_at hides the photo from queries
+	// but keeps the R2 object around. That's intentional — if Dad
+	// accidentally deletes the only photo of a sold item we want a path
+	// back. We'll add an actual purge job later when it matters.
+
+	uploadPhotos: async (event) => {
+		const db = getDB(event);
+		const r2 = event.platform?.env?.PHOTOS;
+		if (!r2) return fail(500, { photoError: 'R2 binding missing — server misconfig.' });
+
+		const item = await loadItemBySku(db, event.params.sku);
+		if (!item) throw error(404);
+
+		const form = await event.request.formData();
+		// File input is `name="photos"` with multiple — getAll() returns
+		// every selected file in order.
+		const files = form.getAll('photos').filter((v): v is File => v instanceof File);
+		if (files.length === 0) {
+			return fail(400, { photoError: 'Pick at least one photo to upload.' });
+		}
+		if (files.length > 20) {
+			return fail(400, { photoError: 'Up to 20 photos at a time, please.' });
+		}
+
+		// Find the current max position so new uploads append to the end
+		// of the gallery (preserve existing order, including primary).
+		const maxRow = await db
+			.prepare(
+				`SELECT COALESCE(MAX(position), -1) AS max_pos
+				 FROM item_photo
+				 WHERE item_id = ? AND deleted_at IS NULL`
+			)
+			.bind(item.id)
+			.first<{ max_pos: number }>();
+		let nextPos = (maxRow?.max_pos ?? -1) + 1;
+
+		// Accept the common web image types. HEIC/HEIF from iPhones is
+		// excluded because browsers can't render it — Dad's phone should
+		// convert at share time, but if it slips through we want a clean
+		// error not a broken thumbnail.
+		const ALLOWED: Record<string, string> = {
+			'image/jpeg': 'jpg',
+			'image/jpg': 'jpg',
+			'image/png': 'png',
+			'image/webp': 'webp',
+			'image/gif': 'gif'
+		};
+		const MAX_BYTES = 15 * 1024 * 1024; // 15MB per photo
+
+		const rejected: string[] = [];
+		const accepted: Array<{ file: File; key: string; ext: string }> = [];
+
+		for (const file of files) {
+			const ctRaw = (file.type || '').toLowerCase();
+			const ext = ALLOWED[ctRaw];
+			if (!ext) {
+				rejected.push(`${file.name}: unsupported type (${ctRaw || 'unknown'})`);
+				continue;
+			}
+			if (file.size > MAX_BYTES) {
+				rejected.push(`${file.name}: ${(file.size / (1024 * 1024)).toFixed(1)}MB > 15MB limit`);
+				continue;
+			}
+			// crypto.randomUUID() is available on Cloudflare Workers.
+			const key = `items/${item.id}/${crypto.randomUUID()}.${ext}`;
+			accepted.push({ file, key, ext });
+		}
+
+		if (accepted.length === 0) {
+			return fail(400, {
+				photoError:
+					'No photos uploaded. ' + (rejected.length ? rejected.join('; ') : 'Try jpg/png/webp.')
+			});
+		}
+
+		// Sequential R2 puts — each one is a subrequest. Cloudflare Pages
+		// caps at 50 subrequests per request on free, and we're well
+		// under that with the 20-file ceiling above plus the DB writes.
+		for (const a of accepted) {
+			const bytes = await a.file.arrayBuffer();
+			await r2.put(a.key, bytes, {
+				httpMetadata: { contentType: a.file.type }
+			});
+		}
+
+		// DB inserts in one batch — fewer round-trips than per-file.
+		const inserts = accepted.map((a) =>
+			db
+				.prepare(
+					`INSERT INTO item_photo
+						(item_id, r2_key, position, alt_text, bytes, content_type)
+					 VALUES (?, ?, ?, ?, ?, ?)`
+				)
+				.bind(
+					item.id,
+					a.key,
+					nextPos++,
+					null,
+					a.file.size,
+					a.file.type
+				)
+		);
+		await db.batch(inserts);
+
+		// If some files were rejected, redirect anyway but surface a
+		// flash via search param — the page reads it and shows a banner.
+		const flash =
+			rejected.length > 0
+				? `?photo_warn=${encodeURIComponent('Skipped: ' + rejected.join('; '))}`
+				: '';
+		throw redirect(303, `/items/${item.sku}${flash}`);
+	},
+
+	deletePhoto: async (event) => {
+		const db = getDB(event);
+		const item = await loadItemBySku(db, event.params.sku);
+		if (!item) throw error(404);
+
+		const form = await event.request.formData();
+		const photoIdRaw = form.get('photo_id')?.toString();
+		const photoId = photoIdRaw ? parseInt(photoIdRaw, 10) : NaN;
+		if (!Number.isInteger(photoId)) {
+			return fail(400, { photoError: 'Bad photo id.' });
+		}
+
+		// Soft-delete: keep the R2 object + DB row, just hide it. The
+		// position is left intact so re-uploading later doesn't collide;
+		// the gallery queries filter on deleted_at IS NULL anyway.
+		await db
+			.prepare(
+				`UPDATE item_photo
+				 SET deleted_at = datetime('now')
+				 WHERE id = ? AND item_id = ? AND deleted_at IS NULL`
+			)
+			.bind(photoId, item.id)
+			.run();
+
+		throw redirect(303, `/items/${item.sku}`);
+	},
+
+	makePrimaryPhoto: async (event) => {
+		const db = getDB(event);
+		const item = await loadItemBySku(db, event.params.sku);
+		if (!item) throw error(404);
+
+		const form = await event.request.formData();
+		const photoIdRaw = form.get('photo_id')?.toString();
+		const photoId = photoIdRaw ? parseInt(photoIdRaw, 10) : NaN;
+		if (!Number.isInteger(photoId)) {
+			return fail(400, { photoError: 'Bad photo id.' });
+		}
+
+		// "Make primary" = compact-renumber the remaining photos so the
+		// picked one becomes position 0 and the rest fill 1..N in their
+		// current order. Cleaner than trying to swap a single pair —
+		// avoids holes from past deletes.
+		const { results: photos } = await db
+			.prepare(
+				`SELECT id FROM item_photo
+				 WHERE item_id = ? AND deleted_at IS NULL
+				 ORDER BY position, id`
+			)
+			.bind(item.id)
+			.all<{ id: number }>();
+
+		// Move the target to the front, drop duplicates.
+		const reordered = [
+			photoId,
+			...photos.map((p) => p.id).filter((id) => id !== photoId)
+		];
+
+		// Only write the rows that actually need updating — D1 has a
+		// hard cap on statements per batch, and this also makes the
+		// audit cleaner.
+		const writes = reordered.map((id, idx) =>
+			db
+				.prepare(`UPDATE item_photo SET position = ? WHERE id = ? AND item_id = ?`)
+				.bind(idx, id, item.id)
+		);
+		if (writes.length > 0) await db.batch(writes);
+
+		throw redirect(303, `/items/${item.sku}`);
 	}
 };
