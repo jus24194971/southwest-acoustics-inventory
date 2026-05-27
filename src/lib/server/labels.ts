@@ -446,24 +446,27 @@ interface LargeFormatFonts extends Fonts {
 
 /**
  * Large-format label renderer — designed around the Primera LX-610's
- * 2" × 3" color cut, with room for the brand logo, a description
- * block, and a substantially larger QR than the DYMO renderer.
+ * 2" × 3" color cut. Layout uses the brand logo as the only header
+ * (no wordmark text — the logo image itself carries the brand mark).
  *
  * Layout (76mm × 51mm, landscape):
  *
  *   ┌────────────────────────────────────────────┐
- *   │  [logo]            Southwest Acoustics     │  ~10mm header
- *   │  ─────────────────────────────────────     │  gold rule
- *   │                                            │
+ *   │                                  [ LOGO ]  │  top-right corner
  *   │  ┌──────────┐  CAT-BRAND-MODEL-COND-YY-NN  │
  *   │  │          │  A1-A2-A3-A4-A5               │
  *   │  │   QR     │  Item Title (bold)            │
  *   │  │          │  Description text wraps       │
- *   │  └──────────┘  across multiple lines…       │
+ *   │  │          │  across multiple lines…       │
+ *   │  └──────────┘                                │
  *   └────────────────────────────────────────────┘
  *
  * For bin labels the right column shifts to bin code (big) + path +
  * friendly name, mirroring the small-format bin layout.
+ *
+ * SKU sizing is dynamic — we try the largest font in {9, 8, 7} pt
+ * that fits the content width, and only wrap to a second line if
+ * even 7pt overflows. Same logic for the attribute line.
  */
 async function renderLargeFormatLabel(
 	doc: PDFDocument,
@@ -477,68 +480,45 @@ async function renderLargeFormatLabel(
 	const widthPt = widthMm * MM;
 	const heightPt = heightMm * MM;
 
-	// Gold tones (match the app's --color-gold palette).
-	const goldDim = rgb(0.45, 0.36, 0.18);
-	const goldBright = rgb(0.78, 0.6, 0.27);
 	const ink = rgb(0.05, 0.05, 0.05);
 	const inkSoft = rgb(0.25, 0.25, 0.25);
 
-	// ---- header band: logo + wordmark + rule ---------------------------
-	const headerHeightMm = 11;
-	const padMm = 3;
-	const logoSlotHeightMm = headerHeightMm - 2; // ~9mm — fits comfortably
+	const padMm = 2.5;
 
-	let wordmarkX = padMm * MM;
-
+	// ---- Logo: top-right corner, no wordmark --------------------------
+	// Aspect-preserved, capped at 24mm wide × 11mm tall so it stays a
+	// brand accent rather than dominating the label. Stored bounds so
+	// content layout below knows to start under it.
+	let logoBottomMm = heightMm - padMm; // if no logo, "below logo" is the top edge
 	if (fonts.logoImage) {
 		const img = fonts.logoImage;
-		// Scale logo to fit the header height while preserving aspect.
-		const logoH = logoSlotHeightMm * MM;
-		const logoW = (img.width / img.height) * logoH;
+		const aspect = img.width / img.height;
+		const MAX_LOGO_WMM = 24;
+		const MAX_LOGO_HMM = 11;
+		let logoWmm = MAX_LOGO_WMM;
+		let logoHmm = logoWmm / aspect;
+		if (logoHmm > MAX_LOGO_HMM) {
+			logoHmm = MAX_LOGO_HMM;
+			logoWmm = logoHmm * aspect;
+		}
+		const logoX = (widthMm - padMm - logoWmm) * MM;
+		const logoY = (heightMm - padMm - logoHmm) * MM;
 		page.drawImage(img, {
-			x: padMm * MM,
-			y: (heightMm - headerHeightMm + 1) * MM,
-			width: logoW,
-			height: logoH
+			x: logoX,
+			y: logoY,
+			width: logoWmm * MM,
+			height: logoHmm * MM
 		});
-		wordmarkX = padMm * MM + logoW + 2 * MM;
+		logoBottomMm = heightMm - padMm - logoHmm;
 	}
 
-	// Italic wordmark — pairs with the logo if present, stands alone if
-	// the logo bytes weren't supplied.
-	page.drawText('Southwest Acoustics', {
-		x: wordmarkX,
-		y: (heightMm - headerHeightMm * 0.62) * MM,
-		size: 11,
-		font: fonts.italicBold,
-		color: goldBright
-	});
-	page.drawText('Shop Floor Inventory', {
-		x: wordmarkX,
-		y: (heightMm - headerHeightMm * 0.92) * MM,
-		size: 6,
-		font: fonts.italic,
-		color: goldDim
-	});
-
-	// Gold rule under the header.
-	page.drawLine({
-		start: { x: padMm * MM, y: (heightMm - headerHeightMm) * MM },
-		end: { x: (widthMm - padMm) * MM, y: (heightMm - headerHeightMm) * MM },
-		thickness: 0.4,
-		color: goldDim
-	});
-
-	// ---- body: QR (left) + content (right) -----------------------------
-	const bodyTopMm = heightMm - headerHeightMm - 1; // 1mm gap below rule
-	const bodyBottomMm = padMm;
-	const bodyHeightMm = bodyTopMm - bodyBottomMm;
-
-	// QR — square, sized to the body height.
-	const qrSizeMm = Math.min(bodyHeightMm, 32);
+	// ---- QR: left side, anchored bottom-left ---------------------------
+	// Big — the QR is the primary scan target. Caps at 36mm so it fits
+	// the label height with margin to spare even on a portrait crop.
+	const qrSizeMm = Math.min(heightMm - 2 * padMm, 36);
 	const qrSizePt = qrSizeMm * MM;
 	const qrX = padMm * MM;
-	const qrY = bodyBottomMm * MM;
+	const qrY = padMm * MM;
 
 	const qrPng = await renderQrPng(label.url);
 	const qrImage = await doc.embedPng(qrPng);
@@ -549,10 +529,14 @@ async function renderLargeFormatLabel(
 		height: qrSizePt
 	});
 
-	// Content column — to the right of the QR.
+	// ---- Content column: right of QR, below logo -----------------------
+	// Top edge sits ~1.5mm under the logo so content doesn't graze it.
+	// If no logo was supplied we slide it back to padMm for parity with
+	// the original layout.
 	const contentX = qrX + qrSizePt + 3 * MM;
 	const contentRight = (widthMm - padMm) * MM;
 	const contentWidthPt = contentRight - contentX;
+	const contentTopMm = fonts.logoImage ? logoBottomMm - 1.5 : heightMm - padMm;
 
 	// Truncate-to-fit helper for single-line strings.
 	const fitChars = (text: string, font: PDFFont, sizePt: number): string => {
@@ -571,36 +555,57 @@ async function renderLargeFormatLabel(
 		return text.slice(0, lo) + '…';
 	};
 
+	// Pick the largest size from `candidates` that fits one line of
+	// `text` in `font` within `widthPt`. Falls back to the smallest.
+	const fitOneLineSize = (
+		text: string,
+		font: PDFFont,
+		candidates: number[],
+		widthPt: number
+	): number => {
+		for (const s of candidates) {
+			if (font.widthOfTextAtSize(text, s) <= widthPt) return s;
+		}
+		return candidates[candidates.length - 1];
+	};
+
 	if (label.kind === 'item') {
 		// SKU split: base (CAT-BRAND-MODEL-COND-YY-SEQ, 20 chars) on
-		// line 1, attrs (A1-A2-A3-A4-A5) on line 2.
+		// line 1, attrs (A1-A2-A3-A4-A5) on line 2. The right-side
+		// logo squeezes content width to ~33mm, so we auto-size the
+		// SKU to the largest size that still fits one line.
 		const baseSku = label.sku.slice(0, 20);
 		const attrSku = label.sku.length > 21 ? label.sku.slice(21) : '';
 
-		let cursorY = (bodyTopMm - 3) * MM;
-		const SKU_SIZE = 10;
-		const ATTR_SIZE = 8;
+		const skuSize = fitOneLineSize(baseSku, fonts.monoBold, [10, 9, 8, 7], contentWidthPt);
+		const attrSize = attrSku
+			? fitOneLineSize(attrSku, fonts.monoBold, [9, 8, 7], contentWidthPt)
+			: 0;
 		const TITLE_SIZE = 9;
 		const DESC_SIZE = 7;
+
+		// Start 1mm below the content top so the SKU isn't kissing the
+		// logo's bottom edge.
+		let cursorY = (contentTopMm - skuSize / MM - 0.5) * MM;
 
 		page.drawText(baseSku, {
 			x: contentX,
 			y: cursorY,
-			size: SKU_SIZE,
+			size: skuSize,
 			font: fonts.monoBold,
 			color: ink
 		});
-		cursorY -= (SKU_SIZE + 2) * 0.5 + 3.5;
+		cursorY -= skuSize + 3;
 
 		if (attrSku) {
 			page.drawText(attrSku, {
 				x: contentX,
 				y: cursorY,
-				size: ATTR_SIZE,
+				size: attrSize,
 				font: fonts.monoBold,
 				color: inkSoft
 			});
-			cursorY -= ATTR_SIZE + 3;
+			cursorY -= attrSize + 4;
 		}
 
 		// Title — bold sans, possibly wrapping onto two lines if it's
@@ -617,14 +622,14 @@ async function renderLargeFormatLabel(
 			cursorY -= TITLE_SIZE + 2;
 		}
 
-		// Description — wrap into the remaining vertical space.
+		// Description — wrap into the remaining vertical space. The QR
+		// bottom is at padMm; we stop drawing above that.
 		if (label.description) {
-			cursorY -= 2; // little breathing room
+			cursorY -= 2;
 			const plain = stripHtml(label.description);
 			if (plain) {
-				// How many lines fit?
 				const lineHeight = DESC_SIZE + 1.5;
-				const remainingPt = cursorY - bodyBottomMm * MM;
+				const remainingPt = cursorY - padMm * MM;
 				const maxLines = Math.max(1, Math.floor(remainingPt / lineHeight));
 				const descLines = wrapLines(plain, fonts.sansFont, DESC_SIZE, contentWidthPt, maxLines);
 				for (const ln of descLines) {
@@ -642,8 +647,8 @@ async function renderLargeFormatLabel(
 	} else {
 		// Bin label — same content shape as the DYMO bin layout but
 		// scaled up. Bin code is the headline, path/name beneath.
-		let cursorY = (bodyTopMm - 6) * MM;
-		const CODE_SIZE = 22;
+		let cursorY = (contentTopMm - 7) * MM;
+		const CODE_SIZE = 20;
 		const PATH_SIZE = 9;
 		const NAME_SIZE = 9;
 
@@ -681,9 +686,9 @@ async function renderLargeFormatLabel(
 		}
 	}
 
-	// Pull in the unused-var ref so TS/build doesn't warn about widthPt
-	// when the layout above happens not to read it (defensive — keeps
-	// the renderer easy to extend without re-deriving these).
+	// Pull in the unused-var refs so TS/build doesn't warn about
+	// widthPt/heightPt when the layout above happens not to read them
+	// (defensive — keeps the renderer easy to extend later).
 	void widthPt;
 	void heightPt;
 }
