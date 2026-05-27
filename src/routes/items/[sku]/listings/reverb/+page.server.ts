@@ -150,6 +150,8 @@ interface ParsedForm {
 	shippingAmount: string; // decimal string or empty for free
 	freeShipping: boolean;
 	publish: boolean;
+	upc: string;
+	upcDoesNotApply: boolean;
 }
 
 function parseFormData(form: FormData): ParsedForm {
@@ -165,7 +167,9 @@ function parseFormData(form: FormData): ParsedForm {
 		conditionUuid: (form.get('reverb_condition_uuid') ?? '').toString().trim(),
 		shippingAmount: (form.get('reverb_shipping_amount') ?? '').toString().trim(),
 		freeShipping: form.get('reverb_free_shipping') === 'on',
-		publish: form.get('reverb_publish') === 'on'
+		publish: form.get('reverb_publish') === 'on',
+		upc: (form.get('reverb_upc') ?? '').toString().trim(),
+		upcDoesNotApply: form.get('reverb_upc_does_not_apply') === 'on'
 	};
 }
 
@@ -193,7 +197,9 @@ async function persistLocal(
 		reverb_category_uuid: parsed.categoryUuid || null,
 		reverb_condition_uuid: parsed.conditionUuid || null,
 		reverb_shipping_amount: parsed.shippingAmount || null,
-		reverb_free_shipping: parsed.freeShipping
+		reverb_free_shipping: parsed.freeShipping,
+		reverb_upc: parsed.upc || null,
+		reverb_upc_does_not_apply: parsed.upcDoesNotApply
 	};
 
 	await upsertListingContent(db, itemId, 'reverb', {
@@ -336,6 +342,22 @@ export const actions: Actions = {
 		const model = parsed.model || item.model || finalTitle.slice(0, 40);
 		const year = parsed.year || String(item.year_received);
 
+		// UPC handling. Reverb requires Brand New items to either carry
+		// a valid UPC/EAN string OR set upc_does_not_apply=true; without
+		// either, the create call 400s with a "UPC required" error. For
+		// other conditions UPC is optional, but for safety we always
+		// send one of the two fields when the form provides them.
+		const upcTrimmed = parsed.upc.trim();
+		const hasUpc = upcTrimmed.length > 0 && !parsed.upcDoesNotApply;
+		// If neither toggle nor a UPC string is provided, surface a
+		// clean error rather than letting Reverb reject it for us.
+		if (!hasUpc && !parsed.upcDoesNotApply) {
+			return fail(400, {
+				pushError:
+					'Reverb requires either a UPC/EAN value OR the "UPC does not apply" checkbox to be set. Most of Dad\'s custom builds and used items qualify as "does not apply" — leave it checked unless this product has a real UPC.'
+			});
+		}
+
 		const payload: ReverbListingCreatePayload = {
 			make,
 			model,
@@ -348,7 +370,13 @@ export const actions: Actions = {
 			year: year || undefined,
 			finish: parsed.finish || undefined,
 			photos: photoUrls.length > 0 ? photoUrls : undefined,
-			publish: parsed.publish
+			publish: parsed.publish,
+			// Exactly one of upc / upc_does_not_apply gets sent — never
+			// both. Reverb's docs say "or", behaviour confirms that
+			// sending both is what triggers the validation error.
+			...(hasUpc
+				? { upc: upcTrimmed }
+				: { upc_does_not_apply: true })
 		};
 
 		// Shipping — free or flat rate. Default region is continental US

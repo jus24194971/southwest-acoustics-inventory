@@ -17,6 +17,8 @@
 		reverb_condition_uuid?: string | null;
 		reverb_shipping_amount?: string | null;
 		reverb_free_shipping?: boolean | null;
+		reverb_upc?: string | null;
+		reverb_upc_does_not_apply?: boolean | null;
 	}
 
 	function parseExtras(json: string | null | undefined): ReverbExtras {
@@ -63,7 +65,15 @@
 			conditionUuid: extras.reverb_condition_uuid ?? '',
 			shippingAmount: extras.reverb_shipping_amount ?? '',
 			freeShipping: extras.reverb_free_shipping ?? false,
-			publish: data.reverbListing ? data.reverbListing.listing_visible === 1 : false
+			publish: data.reverbListing ? data.reverbListing.listing_visible === 1 : false,
+			upc: extras.reverb_upc ?? '',
+			// Default ON when no extras saved yet — Dad's catalog is mostly
+			// custom builds and one-off / used items that don't carry
+			// manufacturer UPCs. Easy to uncheck when needed.
+			upcDoesNotApply:
+				extras.reverb_upc_does_not_apply !== undefined && extras.reverb_upc_does_not_apply !== null
+					? !!extras.reverb_upc_does_not_apply
+					: true
 		};
 	});
 
@@ -72,6 +82,7 @@
 	let publish = $state(initial.publish);
 	let categoryUuid = $state(initial.categoryUuid);
 	let conditionUuid = $state(initial.conditionUuid);
+	let upcDoesNotApply = $state(initial.upcDoesNotApply);
 
 	// Title char count — same thresholds as the SS editor since Reverb
 	// title display also truncates around 80 chars on listing cards.
@@ -323,6 +334,50 @@
 						class="field"
 					/>
 				</div>
+			</div>
+		</fieldset>
+
+		<!-- UPC / EAN — Reverb requires either a value OR
+		     upc_does_not_apply=true for Brand New items. Most of Dad's
+		     catalog (custom builds, used / refurb, vintage) doesn't
+		     have UPCs, so the checkbox defaults to ON. -->
+		<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
+			<legend class="eyebrow px-2">UPC / EAN</legend>
+
+			<label class="flex items-start gap-3">
+				<input
+					type="checkbox"
+					name="reverb_upc_does_not_apply"
+					bind:checked={upcDoesNotApply}
+					class="mt-0.5 h-4 w-4 accent-[color:var(--color-gold)]"
+					style="min-height: auto"
+				/>
+				<div class="space-y-0.5">
+					<span class="text-sm font-medium text-[color:var(--color-ink)]">UPC does not apply</span>
+					<p class="text-[11px] text-[color:var(--color-ink-3)]">
+						Default ON. Custom builds, used / refurb, and vintage items don't carry
+						manufacturer UPCs. Reverb requires either this or a real UPC for Brand New
+						items — leave checked unless this specific product has one printed on it.
+					</p>
+				</div>
+			</label>
+
+			<div class="space-y-1.5" class:opacity-50={upcDoesNotApply}>
+				<label for="reverb_upc" class="eyebrow block">
+					UPC / EAN
+					{#if upcDoesNotApply}
+						<span class="lowercase text-[color:var(--color-ink-4)]">— disabled while "does not apply" is checked</span>
+					{/if}
+				</label>
+				<input
+					id="reverb_upc"
+					name="reverb_upc"
+					type="text"
+					value={initial.upc}
+					placeholder="e.g. 885978110803"
+					class="field font-mono"
+					disabled={upcDoesNotApply}
+				/>
 			</div>
 		</fieldset>
 
