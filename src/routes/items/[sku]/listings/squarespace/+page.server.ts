@@ -385,8 +385,12 @@ export const actions: Actions = {
 
 		// New product needs storePageId; updates re-use whatever's there
 		// (SS doesn't let you change storePageId via the API anyway).
-		const isUpdate = !!existing?.external_id;
-		if (!isUpdate) {
+		// `wantsUpdate` reflects intent from our DB — but if the SS-side
+		// product was deleted out from under us, we fall through to
+		// create below. `didCreate` is the source of truth after the
+		// call for everything downstream (photo upload, redirect).
+		const wantsUpdate = !!existing?.external_id;
+		if (!wantsUpdate) {
 			if (!parsed.storefrontId) {
 				await recordSyncResult(db, item.id, 'squarespace', {
 					status: 'error',
@@ -401,26 +405,91 @@ export const actions: Actions = {
 		}
 
 		try {
-			const result = isUpdate
-				? await updateProduct(apiKey, existing!.external_id!, payload)
-				: await createProduct(apiKey, payload);
+			let result;
+			let didCreate = !wantsUpdate;
+			let wasRecreated = false;
 
-			// ---- Photo upload (new products only) -----------------
+			if (wantsUpdate) {
+				try {
+					result = await updateProduct(apiKey, existing!.external_id!, payload);
+				} catch (err) {
+					// 404 / 405 from an UPDATE means the product no longer
+					// exists on SS — most commonly because Dad deleted it
+					// in the admin UI (this is exactly that scenario). The
+					// external_id is now a tombstone. Auto-recover by
+					// clearing it locally and pushing as a fresh create
+					// so the user just sees a successful Push retry.
+					const isMissingProduct =
+						err instanceof SquarespaceError &&
+						(err.httpStatus === 404 || err.httpStatus === 405);
+					if (!isMissingProduct) throw err;
+
+					if (!parsed.storefrontId) {
+						// We need a storefront for the create. The picker
+						// is always shown so it should be there from the
+						// previous push, but bail with a clear message
+						// if somehow blank.
+						await db
+							.prepare(
+								`UPDATE marketplace_listing
+								 SET external_id = NULL, external_variant_id = NULL, external_url = NULL,
+								     last_sync_error = ?, updated_at = datetime('now')
+								 WHERE item_id = ? AND platform = 'squarespace'`
+							)
+							.bind(
+								'Squarespace product was deleted. Pick a storefront and push again to recreate.',
+								item.id
+							)
+							.run();
+						return fail(400, {
+							pushError:
+								'Squarespace product was deleted on their side. Pick a storefront below and click Push to recreate it as a fresh listing.'
+						});
+					}
+
+					// Clear the stale link BEFORE re-pushing so a failure
+					// during create doesn't leave us pointing at the dead
+					// product. The createProduct call below sets the
+					// fresh external_id via recordSyncResult.
+					await db
+						.prepare(
+							`UPDATE marketplace_listing
+							 SET external_id = NULL, external_variant_id = NULL, external_url = NULL,
+							     updated_at = datetime('now')
+							 WHERE item_id = ? AND platform = 'squarespace'`
+						)
+						.bind(item.id)
+						.run();
+
+					payload.storePageId = parsed.storefrontId;
+					result = await createProduct(apiKey, payload);
+					didCreate = true;
+					wasRecreated = true;
+				}
+			} else {
+				result = await createProduct(apiKey, payload);
+			}
+
+			// ---- Photo upload (new products + recreated only) ---
 			// SS doesn't accept image URLs in the product payload, and
 			// our R2 photos live behind Cloudflare Access — even if it
 			// did, SS couldn't fetch them. So new products need their
 			// photos uploaded explicitly as multipart binary.
 			//
-			// Updates skip this step: re-uploading on every update
-			// would create duplicates on SS. If photos need refreshing
-			// later we'll add a dedicated "Re-push photos" action.
+			// Pure updates skip this step: re-uploading on every update
+			// would create duplicates on SS. Use the "Re-push photos"
+			// action for explicit refresh on an existing product.
+			//
+			// Recreated products (where SS-side deletion forced us to
+			// rebuild) get treated like a fresh create — full photo
+			// upload — since their SS image list is empty by definition.
 			//
 			// Best-effort: a photo failure logs an error but doesn't
 			// fail the whole push. The product is already created at
 			// this point, and partial photos beats no listing.
 			const photoUploadErrors: string[] = [];
 			let photosUploaded = 0;
-			if (!isUpdate) {
+			if (didCreate) {
 				const r2 = event.platform?.env?.PHOTOS;
 				const photoRows = await db
 					.prepare(
@@ -488,6 +557,10 @@ export const actions: Actions = {
 					'photo_warn',
 					`${photoUploadErrors.length} of ${photosUploaded + photoUploadErrors.length} photos failed to upload`
 				);
+			// Surface the recreate path to the UI so the success banner
+			// can read "Recreated on Squarespace" instead of the default
+			// "Pushed successfully" — clearer about what just happened.
+			if (wasRecreated) params.set('recreated', '1');
 			throw redirect(
 				303,
 				`/items/${event.params.sku}/listings/squarespace?${params.toString()}`
@@ -619,5 +692,53 @@ export const actions: Actions = {
 			);
 		}
 		throw redirect(303, `/items/${event.params.sku}/listings/squarespace?${params.toString()}`);
+	},
+
+	// ============================================================
+	// Unlink from Squarespace
+	// ============================================================
+	//
+	// Clears the external_id / external_variant_id / external_url
+	// on the marketplace_listing without touching the SS-side product.
+	// Use cases:
+	//   - The SS product was deleted out from under us and we want
+	//     to force the next push to create fresh (push auto-handles
+	//     this too via 404/405 detection — this is the manual lever).
+	//   - The SS product is being relinked to a different one (Dad
+	//     wants to point this listing at a manually-created SS
+	//     product, or a sibling listing).
+	//   - Sandbox / debugging.
+	//
+	// Does NOT delete the SS-side product. That stays as-is. We just
+	// forget about it locally.
+
+	unlinkFromSquarespace: async (event) => {
+		const db = getDB(event);
+		const item = await db
+			.prepare(`SELECT id FROM item WHERE sku = ? AND deleted_at IS NULL`)
+			.bind(event.params.sku)
+			.first<{ id: number }>();
+		if (!item) throw error(404);
+
+		await db
+			.prepare(
+				`UPDATE marketplace_listing
+				 SET external_id = NULL,
+				     external_variant_id = NULL,
+				     external_url = NULL,
+				     status = 'draft',
+				     last_synced_at = NULL,
+				     last_sync_status = NULL,
+				     last_sync_error = NULL,
+				     updated_at = datetime('now')
+				 WHERE item_id = ? AND platform = 'squarespace'`
+			)
+			.bind(item.id)
+			.run();
+
+		throw redirect(
+			303,
+			`/items/${event.params.sku}/listings/squarespace?unlinked=1`
+		);
 	}
 };

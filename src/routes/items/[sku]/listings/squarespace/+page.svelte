@@ -344,10 +344,23 @@
 		<div class="panel px-4 py-3" style="border-color: var(--color-moss)">
 			<p class="text-sm text-[color:var(--color-moss-bright)]">Saved locally. No push happened.</p>
 		</div>
+	{:else if page.url.searchParams.get('unlinked') === '1'}
+		<div class="panel px-4 py-3" style="border-color: var(--color-gold-dim)">
+			<p class="text-sm text-[color:var(--color-gold-bright)]">
+				Unlinked from Squarespace. The product on Squarespace's side wasn't touched — the next
+				Push will create a fresh one.
+			</p>
+		</div>
 	{:else if pushedJustNow}
 		<div class="panel px-4 py-3" style="border-color: var(--color-moss)">
 			<p class="text-sm text-[color:var(--color-moss-bright)]">
-				{#if page.url.searchParams.get('photo_action') === 'repush'}
+				{#if page.url.searchParams.get('recreated') === '1'}
+					Recreated on Squarespace. The previous product was deleted on Squarespace's side, so
+					a fresh one was created with the latest content
+					{#if page.url.searchParams.get('photos')}
+						and {page.url.searchParams.get('photos')} photo(s) uploaded
+					{/if}.
+				{:else if page.url.searchParams.get('photo_action') === 'repush'}
 					{page.url.searchParams.get('photos') ?? 0} photo(s) uploaded to existing Squarespace listing.
 				{:else}
 					Pushed to Squarespace successfully.
@@ -818,6 +831,46 @@
 				</div>
 				<button type="submit" class="btn-ghost px-4 py-2 text-sm" disabled={!data.hasApiKey}>
 					↻ Re-push photos
+				</button>
+			</div>
+		</form>
+
+		<!-- Unlink panel — for when SS-side product is gone or Dad wants to relink. -->
+		<form
+			method="POST"
+			action="?/unlinkFromSquarespace"
+			class="panel space-y-3 px-6 py-4"
+			style="border-color: var(--color-rust-dim, var(--color-line-dim))"
+			onsubmit={(e) => {
+				if (
+					!confirm(
+						'Forget the Squarespace product link for this listing. The product on ' +
+							"Squarespace's side is NOT touched — if it still exists you'd have a " +
+							'duplicate after the next Push. Use this when SS shows no product (deleted), ' +
+							'or when you want to point at a different product. Continue?'
+					)
+				) {
+					e.preventDefault();
+				}
+			}}
+		>
+			<div class="flex items-baseline justify-between gap-3">
+				<div>
+					<p class="eyebrow" style="color: var(--color-rust-bright)">Unlink from Squarespace</p>
+					<p class="mt-1 text-[11px] italic text-[color:var(--color-ink-3)]">
+						Clears the local link to the Squarespace product (external id
+						<span class="font-mono">{data.listing.external_id}</span>) without touching the
+						SS side. Next Push will create a fresh product. Use after deleting the product on
+						Squarespace, or to relink. <strong class="not-italic">Push usually auto-handles
+							this</strong> if SS returns a 404/405 on update — this is the manual lever.
+					</p>
+				</div>
+				<button
+					type="submit"
+					class="btn-ghost px-4 py-2 text-sm"
+					style="color: var(--color-rust-bright)"
+				>
+					Unlink
 				</button>
 			</div>
 		</form>
