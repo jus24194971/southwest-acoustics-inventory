@@ -23,6 +23,7 @@ import {
 	AUTO_CHECK_SCORE,
 	type CategorySuggestion
 } from '$lib/server/category_suggestions';
+import { categoryNamesFromSlugs } from '$lib/squarespace_categories';
 
 /**
  * /items/[sku]/listings/squarespace — Squarespace listing editor.
@@ -365,12 +366,19 @@ export const actions: Actions = {
 			};
 		}
 
+		// Map the picked category slugs to their actual SS category
+		// display names. These get sent in the (undocumented but
+		// functional) `categories` field on the product payload. The
+		// slug versions are still in tags[] as a fallback.
+		const categoryNames = categoryNamesFromSlugs(parsed.categories);
+
 		const payload: SquarespaceProductWritePayload = {
 			type: 'PHYSICAL',
 			name: finalName,
 			description: finalDesc,
 			urlSlug: finalSlug,
 			tags: effectiveTags,
+			categories: categoryNames.length > 0 ? categoryNames : undefined,
 			isVisible: parsed.visible === 1,
 			variants: [variantPayload]
 		};

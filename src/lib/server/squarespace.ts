@@ -191,6 +191,22 @@ export interface SquarespaceProductWritePayload {
 	description?: string; // HTML
 	urlSlug?: string;
 	tags?: string[];
+	/**
+	 * SS product categories (sub-shop navigation entries on Dad's
+	 * storefront). NOT publicly documented in the Products API as of
+	 * this writing — SS docs only mention `tags`. We send it anyway
+	 * because the admin UI clearly stores categories separately from
+	 * tags, and APIs typically accept the underlying field name.
+	 *
+	 * If SS silently ignores it, no harm done — we also send the
+	 * category slugs in `tags[]` as a fallback for tag-driven
+	 * storefront filtering. If it works, categories appear correctly
+	 * in SS admin and drive the proper sub-shop navigation.
+	 *
+	 * Category names: max 25 chars, case-sensitive, must match what
+	 * SS admin shows (or it'll create a new category with that name).
+	 */
+	categories?: string[];
 	isVisible?: boolean;
 	variants: Array<{
 		sku: string;

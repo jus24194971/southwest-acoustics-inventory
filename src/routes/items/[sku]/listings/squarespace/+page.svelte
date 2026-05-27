@@ -558,20 +558,20 @@
 
 		<!-- ============= Storefront categories ============= -->
 		<!--
-			Squarespace's "sub-shops" (Leo Jaymz Guitars, Special Value
-			Guitars, Parts and Accessories, etc.) are tag-filtered views
-			of the single Store Page. We add the chosen category slugs to
-			the product's tag list on push so it shows up under the right
-			sub-shop URL. Each chosen category is one form value with
-			name="listing_category" — getAll() reads them on the server.
+			SS has real Product Categories (separate from Tags). The
+			Commerce API's public docs only list `tags`, but the admin
+			UI shows Categories as their own field driving sub-shop
+			navigation. We send BOTH on push: the category's actual
+			display name in payload.categories[] (likely undocumented
+			but works in practice), and the URL slug in payload.tags[]
+			as a fallback for tag-based storefront filters.
 
 			Suggestions are pre-checked on fresh listings via the
 			data.autoCheckedSlugs prop. The ✨ glyph on each checkbox
-			label shows which slugs the engine flagged for this item —
-			useful even after the user manually adjusts the selection.
+			label shows which slugs the engine flagged for this item.
 		-->
 		<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
-			<legend class="eyebrow px-2">Storefront categories</legend>
+			<legend class="eyebrow px-2">Squarespace categories</legend>
 
 			{#if data.autoCheckedSlugs.length > 0}
 				<div
@@ -602,8 +602,11 @@
 			{/if}
 
 			<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
-				Pick every sub-shop this listing should appear on. The slugs get appended to the
-				product's Squarespace tags so the storefront filtering routes them correctly.
+				Pick every sub-shop this listing should appear on. Push sends the category names to
+				Squarespace's <span class="font-mono">categories</span> field (drives the sub-shop
+				navigation), plus the slug as a tag fallback. If after pushing the categories don't
+				appear in SS admin, the API likely didn't accept the field and Dad will need to
+				assign them in SS admin manually — the tag still works for URL filtering.
 			</p>
 
 			{#each ['guitars', 'parts', 'special'] as group}
