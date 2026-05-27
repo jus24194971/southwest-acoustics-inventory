@@ -13,6 +13,7 @@ import {
 	createProduct,
 	updateProduct,
 	uploadProductImage,
+	getProduct,
 	SquarespaceError,
 	type SquarespaceProductWritePayload
 } from '$lib/server/squarespace';
@@ -753,6 +754,151 @@ export const actions: Actions = {
 	//
 	// Does NOT delete the SS-side product. That stays as-is. We just
 	// forget about it locally.
+
+	// ============================================================
+	// Pull from Squarespace (Phase 1 of bidirectional sync)
+	// ============================================================
+	//
+	// Manual per-item refresh: fetches the current state of THIS
+	// listing's SS product and writes back to our local copy.
+	// Overwrites listing_title / listing_description_html /
+	// listing_price_cents with whatever SS has, and updates
+	// item.stock_qty (writing a 'sale' or 'adjust' movement for
+	// any delta) so the next push from us doesn't undo Dad's
+	// SS-side edits.
+	//
+	// Eventual goal is webhook-driven real-time sync (Phase 2).
+	// This button is the manual lever in the meantime — useful
+	// even after webhooks land for "pull latest right now" cases.
+
+	pullFromSquarespace: async (event) => {
+		const db = getDB(event);
+		const apiKey = event.platform?.env?.SQUARESPACE_API_KEY;
+		if (!apiKey) return fail(400, { pushError: 'SQUARESPACE_API_KEY not configured.' });
+
+		const item = await db
+			.prepare(
+				`SELECT id, sku, title, stock_qty, current_bin_id
+				 FROM item WHERE sku = ? AND deleted_at IS NULL`
+			)
+			.bind(event.params.sku)
+			.first<{
+				id: number;
+				sku: string;
+				title: string;
+				stock_qty: number;
+				current_bin_id: number | null;
+			}>();
+		if (!item) throw error(404);
+
+		const existing = await loadListing(db, item.id, 'squarespace');
+		if (!existing?.external_id) {
+			return fail(400, {
+				pushError:
+					'No Squarespace product to pull from. Push the listing first to create one.'
+			});
+		}
+
+		try {
+			const ssProduct = await getProduct(apiKey, existing.external_id);
+
+			// Extract the canonical fields. SS wraps variants in an array
+			// even when there's just one — single-variant is the only
+			// case we currently push, so [0] is sufficient.
+			const ssVariant = ssProduct.variants?.[0];
+			const ssPriceCents = ssVariant?.pricing?.basePrice
+				? Math.round(parseFloat(ssVariant.pricing.basePrice.value) * 100)
+				: null;
+			const ssStock =
+				ssVariant?.stock && !ssVariant.stock.unlimited
+					? ssVariant.stock.quantity
+					: null;
+			const ssUrl =
+				ssProduct.url ??
+				(ssProduct.urlSlug
+					? `https://www.southwestacousticproducts.com/shop/${ssProduct.urlSlug.replace(/^\/+/, '')}`
+					: null);
+
+			// Refresh the local marketplace_listing copy with what SS has.
+			await db
+				.prepare(
+					`UPDATE marketplace_listing
+					 SET listing_title = ?,
+					     listing_description_html = ?,
+					     listing_price_cents = COALESCE(?, listing_price_cents),
+					     external_url = COALESCE(?, external_url),
+					     last_synced_at = datetime('now'),
+					     last_sync_status = 'ok',
+					     last_sync_error = NULL,
+					     updated_at = datetime('now')
+					 WHERE item_id = ? AND platform = 'squarespace'`
+				)
+				.bind(
+					ssProduct.name,
+					ssProduct.description ?? null,
+					ssPriceCents,
+					ssUrl,
+					item.id
+				)
+				.run();
+
+			// Stock delta — write a movement so the provenance ledger
+			// shows where the change came from. Default to 'adjust'; if
+			// stock went DOWN that's almost always a sale, so use 'sale'
+			// kind for that specific direction (lets the dashboard's
+			// recent-activity feed read it correctly).
+			let stockDelta = 0;
+			if (ssStock !== null && ssStock !== item.stock_qty) {
+				stockDelta = ssStock - item.stock_qty;
+				const kind: 'sale' | 'receive' | 'adjust' =
+					stockDelta < 0 ? 'sale' : stockDelta > 0 ? 'receive' : 'adjust';
+				const dir = stockDelta > 0 ? 'up' : 'down';
+				const fromBin = kind === 'sale' ? item.current_bin_id : null;
+				const toBin = kind === 'receive' ? item.current_bin_id : null;
+
+				await db.batch([
+					db
+						.prepare(
+							`UPDATE item SET stock_qty = ?, updated_at = datetime('now') WHERE id = ?`
+						)
+						.bind(ssStock, item.id),
+					db
+						.prepare(
+							`INSERT INTO movement (item_id, kind, from_bin_id, to_bin_id, quantity, note, actor, reference)
+							 VALUES (?, ?, ?, ?, ?, ?, 'squarespace-pull', ?)`
+						)
+						.bind(
+							item.id,
+							kind,
+							fromBin,
+							toBin,
+							Math.abs(stockDelta),
+							`Pulled from Squarespace: ${item.stock_qty} → ${ssStock} (${dir} ${Math.abs(stockDelta)})`,
+							existing.external_id
+						)
+				]);
+			}
+
+			const params = new URLSearchParams({ pulled: '1' });
+			if (stockDelta !== 0) {
+				params.set('stock_from', String(item.stock_qty));
+				params.set('stock_to', String(ssStock));
+			}
+			throw redirect(
+				303,
+				`/items/${event.params.sku}/listings/squarespace?${params.toString()}`
+			);
+		} catch (err) {
+			if (err && typeof err === 'object' && 'status' in err && 'location' in err) throw err;
+			const message =
+				err instanceof SquarespaceError
+					? `HTTP ${err.httpStatus} from Squarespace: ${err.body.slice(0, 400)}`
+					: err instanceof Error
+						? err.message
+						: String(err);
+			return fail(500, { pushError: message });
+		}
+	},
 
 	unlinkFromSquarespace: async (event) => {
 		const db = getDB(event);

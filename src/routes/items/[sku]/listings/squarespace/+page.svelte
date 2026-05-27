@@ -351,6 +351,18 @@
 				Push will create a fresh one.
 			</p>
 		</div>
+	{:else if page.url.searchParams.get('pulled') === '1'}
+		<div class="panel px-4 py-3" style="border-color: var(--color-moss)">
+			<p class="text-sm text-[color:var(--color-moss-bright)]">
+				Pulled latest from Squarespace. Title, description, price, and URL refreshed.
+			</p>
+			{#if page.url.searchParams.get('stock_to')}
+				<p class="mt-1 text-xs text-[color:var(--color-gold-bright)]">
+					Stock changed: {page.url.searchParams.get('stock_from')} →
+					{page.url.searchParams.get('stock_to')} (movement recorded)
+				</p>
+			{/if}
+		</div>
 	{:else if pushedJustNow}
 		<div class="panel px-4 py-3" style="border-color: var(--color-moss)">
 			<p class="text-sm text-[color:var(--color-moss-bright)]">
@@ -856,6 +868,46 @@
 		when the listing has an external_id (already on Squarespace);
 		new listings handle photos through the main Push button.
 	-->
+	<!-- Pull from Squarespace — manual sync-back for one listing.
+	     Use case: Dad edited the SS product on their side (price,
+	     description, stock) and wants our local copy to catch up. -->
+	{#if data.listing?.external_id}
+		<form
+			method="POST"
+			action="?/pullFromSquarespace"
+			class="panel space-y-3 px-6 py-4"
+			onsubmit={(e) => {
+				if (
+					!confirm(
+						"Pull the latest from Squarespace? This overwrites the local title, " +
+							"description, and price with whatever's on Squarespace right now. " +
+							"Stock differences write a movement. Continue?"
+					)
+				) {
+					e.preventDefault();
+				}
+			}}
+		>
+			<div class="flex items-baseline justify-between gap-3">
+				<div>
+					<p class="eyebrow">Pull from Squarespace</p>
+					<p class="mt-1 text-[11px] italic text-[color:var(--color-ink-3)]">
+						Refresh the local copy with whatever's on Squarespace right now. Use this after
+						editing the product in Squarespace admin so the next push from us doesn't undo
+						those edits. Stock deltas write a movement to the provenance ledger.
+					</p>
+				</div>
+				<button
+					type="submit"
+					class="btn-ghost px-4 py-2 text-sm"
+					disabled={!data.hasApiKey}
+				>
+					↻ Pull from Squarespace
+				</button>
+			</div>
+		</form>
+	{/if}
+
 	{#if data.listing?.external_id}
 		<form
 			method="POST"
