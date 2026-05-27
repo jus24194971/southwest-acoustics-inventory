@@ -103,11 +103,6 @@ export interface BuildPdfOptions {
 	 *  where Dad might want N identical labels (one per object) or
 	 *  for bins where multiple identical labels are needed. */
 	copiesPerLabel?: number;
-	/** Brand logo PNG bytes. Only used by large-format templates
-	 *  (Primera LX-610). Callers fetch /southwest_logo.png via
-	 *  event.fetch and pass the bytes through. Optional — the
-	 *  renderer falls back to a text wordmark if absent. */
-	logoPng?: Uint8Array;
 }
 
 /**
@@ -137,82 +132,164 @@ export async function buildLabelsPdf(
 	const sansFont = await doc.embedFont(StandardFonts.Helvetica);
 	const sansBold = await doc.embedFont(StandardFonts.HelveticaBold);
 	const italic = await doc.embedFont(StandardFonts.HelveticaOblique);
-	const italicBold = await doc.embedFont(StandardFonts.HelveticaBoldOblique);
+	// TimesBoldItalic stands in for Cambria-BoldItalic (which lives on
+	// Windows but isn't a PDF standard font). Used only for the "SA"
+	// monogram drawn in the corner of every label.
+	const timesItalicBold = await doc.embedFont(StandardFonts.TimesRomanBoldItalic);
 
-	// Embed the brand logo once if provided — the same image gets
-	// drawn on every page of a multi-label run, so do the embed cost
-	// upfront and reuse the handle.
-	let logoImage = null;
-	if (options.logoPng && options.logoPng.length > 0) {
-		try {
-			logoImage = await doc.embedPng(options.logoPng);
-		} catch {
-			// Bad bytes — fall back to the text wordmark.
-			logoImage = null;
-		}
-	}
-
-	// Large-format templates get a richer renderer. Threshold of 40mm
-	// is well above any DYMO size but well below the 51mm LX-610 short
-	// edge — if we ever add a mid-size template we'll revisit.
-	const isLargeFormat = template.heightMm >= 40;
+	const fonts: LabelFonts = {
+		monoFont,
+		monoBold,
+		sansFont,
+		sansBold,
+		italic,
+		timesItalicBold
+	};
 
 	for (const label of labels) {
 		for (let copy = 0; copy < copies; copy++) {
 			const page = doc.addPage([widthPt, heightPt]);
-			if (isLargeFormat) {
-				await renderLargeFormatLabel(doc, page, label, template, {
-					monoFont,
-					monoBold,
-					sansFont,
-					sansBold,
-					italic,
-					italicBold,
-					logoImage
-				});
-			} else {
-				await renderLabel(doc, page, label, template, {
-					monoFont,
-					monoBold,
-					sansFont,
-					sansBold,
-					italic
-				});
-			}
+			await renderLabel(doc, page, label, template, fonts);
 		}
 	}
 
 	return await doc.save();
 }
 
-interface Fonts {
+interface LabelFonts {
 	monoFont: PDFFont;
 	monoBold: PDFFont;
 	sansFont: PDFFont;
 	sansBold: PDFFont;
 	italic: PDFFont;
+	timesItalicBold: PDFFont; // for the "SA" monogram
 }
 
+// --- Brand palette for the SA monogram --------------------------------
+// Matches the SW Listing Studio icon generator (scripts/generate_icon.py):
+//   bg    = #1B1813 (--bg-shell)
+//   panel = #26211A (--bg-panel)
+//   gold  = #D6B074 (--gold-bright)
+//   gold-dim = #7A6238 (--gold-dim)
+const SA_BG = rgb(0.106, 0.094, 0.075);
+const SA_BG_PANEL = rgb(0.149, 0.129, 0.102);
+const SA_GOLD = rgb(0.839, 0.690, 0.455);
+const SA_GOLD_DIM = rgb(0.478, 0.384, 0.220);
+
+/**
+ * Draw the SA monogram (italic gold "SA" on dark-brown square) at the
+ * given position and size. Mirrors the listing-studio icon generator:
+ * at ≥12pt the icon gets a subtle inset panel + gold-dim ring; below
+ * that it's a plain dark square (rings turn to noise on tiny labels).
+ *
+ * `size` is in PDF points (pt). Use `mm * MM` to convert.
+ */
+function drawSaIcon(
+	page: PDFPage,
+	x: number,
+	y: number,
+	size: number,
+	fonts: LabelFonts
+): void {
+	page.drawRectangle({
+		x,
+		y,
+		width: size,
+		height: size,
+		color: SA_BG
+	});
+
+	// Inset panel + ring only at sizes where 1-2pt detail reads cleanly.
+	const SHOW_RING_MIN_PT = 18;
+	if (size >= SHOW_RING_MIN_PT) {
+		const inset = Math.max(0.6, size / 32);
+		const ringWidth = Math.max(0.3, size / 96);
+		page.drawRectangle({
+			x: x + inset,
+			y: y + inset,
+			width: size - 2 * inset,
+			height: size - 2 * inset,
+			color: SA_BG_PANEL,
+			borderColor: SA_GOLD_DIM,
+			borderWidth: ringWidth
+		});
+	}
+
+	// "SA" letters — italic at the larger sizes (matches the Cambria
+	// Italic look in the Python generator), upright bold when the
+	// label is tiny so the diagonal A stays defined.
+	const useItalic = size >= 22;
+	const font = useItalic ? fonts.timesItalicBold : fonts.sansBold;
+	// Sized to take ~58% of the icon when italic, ~70% when upright —
+	// italics carry more visual weight and need a bit more breathing room.
+	const fontSizePt = useItalic ? size * 0.58 : size * 0.7;
+	const text = 'SA';
+	const textWidth = font.widthOfTextAtSize(text, fontSizePt);
+	// Optical centering: cap-height ≈ 0.7 of font size; baseline lands
+	// roughly cap-height below the visual top.
+	const textX = x + (size - textWidth) / 2;
+	const textY = y + (size - fontSizePt * 0.7) / 2;
+	page.drawText(text, {
+		x: textX,
+		y: textY,
+		size: fontSizePt,
+		font,
+		color: SA_GOLD
+	});
+}
+
+/**
+ * Unified label renderer — works for every label template, scaling QR
+ * size, SA monogram size, content area, and font sizes off the label
+ * dimensions. Drives both individual reprint and the bulk receive PDF
+ * since they share buildLabelsPdf.
+ *
+ * Layout (landscape, any size):
+ *
+ *   ┌────────────────────────────────────────┐
+ *   │                                  ┌──┐  │  SA icon, top-right
+ *   │  ┌──────┐  CAT-BRAND-MODEL-COND  │SA│  │
+ *   │  │      │  A1-A2-A3-A4-A5         └──┘  │
+ *   │  │ QR   │  Item title                  │
+ *   │  │      │  Description (when room)…    │
+ *   │  └──────┘                                │
+ *   └────────────────────────────────────────┘
+ *
+ * Decisions made dynamically per template:
+ *   - QR size: fills the short edge minus padding, capped at 36mm
+ *   - SA icon size: proportional to label height (~40%, capped at 16mm)
+ *   - SKU font size: largest that fits one line; falls back to 5pt
+ *   - Description: rendered only if vertical room remains after title
+ *
+ * For bin labels the content column becomes "BIG CODE / path / name"
+ * instead of SKU + title + description.
+ */
 async function renderLabel(
 	doc: PDFDocument,
 	page: PDFPage,
 	label: Label,
 	template: LabelTemplate,
-	fonts: Fonts
+	fonts: LabelFonts
 ): Promise<void> {
-	const heightPt = template.heightMm * MM;
-	const widthPt = template.widthMm * MM;
+	const widthMm = template.widthMm;
+	const heightMm = template.heightMm;
+	const widthPt = widthMm * MM;
+	const heightPt = heightMm * MM;
 
-	// ---------- QR block ------------------------------------------------
-	// Square, anchored top-left with a 1mm margin. Size = (label
-	// height - 2mm margin), so it fills the short edge.
-	const qrSizeMm = template.heightMm - 2;
+	const ink = rgb(0.05, 0.05, 0.05);
+	const inkSoft = rgb(0.25, 0.25, 0.25);
+
+	// Compact labels get tighter margins so we can scrape every mm; the
+	// LX-610 has room to breathe so its margins are larger.
+	const small = heightMm < 30;
+	const padMm = small ? 1.2 : 2.5;
+	const gapMm = small ? 1.5 : 3;
+
+	// ---- QR: bottom-left, scaled to the short edge --------------------
+	const qrSizeMm = Math.min(heightMm - 2 * padMm, 36);
 	const qrSizePt = qrSizeMm * MM;
-	const qrX = 1 * MM;
-	// PDF coords have origin at bottom-left, Y axis up. Bottom edge
-	// of the QR at 1mm.
-	const qrY = 1 * MM;
-
+	const qrX = padMm * MM;
+	const qrY = padMm * MM;
 	const qrPng = await renderQrPng(label.url);
 	const qrImage = await doc.embedPng(qrPng);
 	page.drawImage(qrImage, {
@@ -222,23 +299,42 @@ async function renderLabel(
 		height: qrSizePt
 	});
 
-	// ---------- Text block ---------------------------------------------
-	// Right of the QR, with a 2mm gap.
-	const textX = qrX + qrSizePt + 2 * MM;
-	const textWidthMm = template.widthMm - (qrSizeMm + 4); // 1mm L + 2mm gap + 1mm R
-	const textWidthPt = textWidthMm * MM;
+	// ---- SA monogram: top-right ---------------------------------------
+	// Square icon, sized as a fraction of label height capped at 16mm
+	// (any bigger and it dominates the LX-610 layout). Floor at 4mm so
+	// even on a 19mm DYMO the icon is recognizable rather than invisible.
+	const iconSizeMm = Math.max(4, Math.min(heightMm * 0.42, 16));
+	const iconX = (widthMm - padMm - iconSizeMm) * MM;
+	const iconY = (heightMm - padMm - iconSizeMm) * MM;
+	drawSaIcon(page, iconX, iconY, iconSizeMm * MM, fonts);
 
-	// Approximate "how many chars fit at this point size" using each
-	// font's average advance width — used to truncate titles cleanly.
+	// ---- Content column: right of QR, below SA icon -------------------
+	const contentX = qrX + qrSizePt + gapMm * MM;
+	const contentRight = (widthMm - padMm) * MM;
+	const contentWidthPt = contentRight - contentX;
+	// Top edge sits ~1mm below the icon so content doesn't graze it.
+	const contentTopMm = heightMm - padMm - iconSizeMm - 1;
+
+	// Helpers ------------------------------------------------------------
+	const fitOneLineSize = (
+		text: string,
+		font: PDFFont,
+		candidates: number[]
+	): number => {
+		for (const s of candidates) {
+			if (font.widthOfTextAtSize(text, s) <= contentWidthPt) return s;
+		}
+		return candidates[candidates.length - 1];
+	};
+
 	const fitChars = (text: string, font: PDFFont, sizePt: number): string => {
 		const w = font.widthOfTextAtSize(text, sizePt);
-		if (w <= textWidthPt) return text;
-		// Binary-trim until it fits, append ellipsis.
+		if (w <= contentWidthPt) return text;
 		let lo = 0;
 		let hi = text.length;
 		while (lo < hi) {
 			const mid = (lo + hi + 1) >>> 1;
-			if (font.widthOfTextAtSize(text.slice(0, mid) + '…', sizePt) <= textWidthPt) {
+			if (font.widthOfTextAtSize(text.slice(0, mid) + '…', sizePt) <= contentWidthPt) {
 				lo = mid;
 			} else {
 				hi = mid - 1;
@@ -247,106 +343,153 @@ async function renderLabel(
 		return text.slice(0, lo) + '…';
 	};
 
-	// Layout was tuned for a 19mm-tall label; everything (font sizes,
-	// vertical spacing) scales linearly with `scale` so a taller label
-	// fills its full height instead of crowding into the top corner.
-	// At scale=1 the layout matches the original 19×64mm look.
-	const scale = template.heightMm / 19;
-
-	// Y baselines from the top, in mm-from-bottom. The spacing
-	// constants (3.5, 7.8, 12.0, 16.4 mm) are the original layout for
-	// 19mm — they get multiplied by `scale` so a 25mm or 32mm label
-	// uses proportionally bigger gaps.
-	const yBrand = (template.heightMm - 3.5 * scale) * MM;
-	const yPrimary = (template.heightMm - 7.8 * scale) * MM;
-	const ySecondary = (template.heightMm - 12.0 * scale) * MM;
-	const yTertiary = (template.heightMm - 16.4 * scale) * MM;
-
-	// Font sizes scale the same way. Cap the upper bound on title /
-	// brand so they don't fight the SKU for visual weight on the
-	// biggest labels.
-	const fsBrand = 5 * scale;
-	const fsSku = 7 * scale;
-	const fsTitle = Math.min(6 * scale, 9);
-	const fsBinCode = 11 * scale;
-	const fsBinPath = 6 * scale;
-
-	// Brand strip — italic Fraunces-feel using Helvetica oblique
-	// since we don't have a custom font embedded yet.
-	page.drawText('Southwest Acoustics', {
-		x: textX,
-		y: yBrand,
-		size: fsBrand,
-		font: fonts.italic,
-		color: rgb(0.45, 0.36, 0.18) // gold-dim
-	});
-
+	// Item label ---------------------------------------------------------
 	if (label.kind === 'item') {
-		// Item label — split the 40-char SKU into base + attrs. Both lines
-		// in Courier Bold so the SKU prints heavy and stays legible at
-		// 7pt on glossy thermal stock.
-		const baseSku = label.sku.slice(0, 20); // CAT-BRAND-MODEL-COND-YY-SEQ
-		const attrSku = label.sku.length > 21 ? label.sku.slice(21) : ''; // A1-...-A5
+		const baseSku = label.sku.slice(0, 20);
+		const attrSku = label.sku.length > 21 ? label.sku.slice(21) : '';
+
+		// Font candidates scale with label size. Small labels can dip to
+		// 5pt — still readable when held close, important when content
+		// width is tight (DYMO 19mm has ~40mm of content).
+		const skuCandidates = small ? [9, 8, 7, 6, 5] : [10, 9, 8, 7];
+		const attrCandidates = small ? [8, 7, 6, 5] : [9, 8, 7];
+
+		const skuSize = fitOneLineSize(baseSku, fonts.monoBold, skuCandidates);
+		const attrSize = attrSku ? fitOneLineSize(attrSku, fonts.monoBold, attrCandidates) : 0;
+		const titleSize = small ? 6.5 : 9;
+		const descSize = 7;
+
+		// Line spacing tightens for small labels.
+		const skuGap = small ? 2 : 3;
+		const attrGap = small ? 2 : 4;
+		const titleGap = small ? 1.5 : 2;
+		const descLineHeight = descSize + 1.5;
+
+		let cursorY = (contentTopMm - skuSize / MM - 0.5) * MM;
 
 		page.drawText(baseSku, {
-			x: textX,
-			y: yPrimary,
-			size: fsSku,
+			x: contentX,
+			y: cursorY,
+			size: skuSize,
 			font: fonts.monoBold,
-			color: rgb(0, 0, 0)
+			color: ink
 		});
+		cursorY -= skuSize + skuGap;
 
 		if (attrSku) {
 			page.drawText(attrSku, {
-				x: textX,
-				y: ySecondary,
-				size: fsSku,
+				x: contentX,
+				y: cursorY,
+				size: attrSize,
 				font: fonts.monoBold,
-				color: rgb(0, 0, 0)
+				color: inkSoft
 			});
+			cursorY -= attrSize + attrGap;
 		}
 
-		const titleFitted = fitChars(label.title, fonts.sansFont, fsTitle);
-		page.drawText(titleFitted, {
-			x: textX,
-			y: yTertiary,
-			size: fsTitle,
-			font: fonts.sansFont,
-			color: rgb(0.15, 0.15, 0.15)
-		});
+		// Title — wrapped to 1 line on small labels (no vertical room),
+		// up to 2 lines on big ones.
+		const maxTitleLines = small ? 1 : 2;
+		const titleLines = wrapLines(
+			label.title,
+			fonts.sansBold,
+			titleSize,
+			contentWidthPt,
+			maxTitleLines
+		);
+		for (const ln of titleLines) {
+			if (cursorY < qrY + 1 * MM) break; // ran out of room
+			page.drawText(ln, {
+				x: contentX,
+				y: cursorY,
+				size: titleSize,
+				font: fonts.sansBold,
+				color: ink
+			});
+			cursorY -= titleSize + titleGap;
+		}
+
+		// Description — only when there's meaningful vertical room.
+		// Skipped entirely on small labels.
+		if (!small && label.description) {
+			cursorY -= 2;
+			const plain = stripHtml(label.description);
+			if (plain) {
+				const remainingPt = cursorY - qrY;
+				const maxLines = Math.max(0, Math.floor(remainingPt / descLineHeight));
+				if (maxLines > 0) {
+					const descLines = wrapLines(plain, fonts.sansFont, descSize, contentWidthPt, maxLines);
+					for (const ln of descLines) {
+						page.drawText(ln, {
+							x: contentX,
+							y: cursorY,
+							size: descSize,
+							font: fonts.sansFont,
+							color: inkSoft
+						});
+						cursorY -= descLineHeight;
+					}
+				}
+			}
+		}
 	} else {
-		// Bin label — path on the secondary line so Dad can read the
-		// hierarchy at a glance; bin CODE big on the primary; name
-		// last.
-		const pathFitted = fitChars(label.path, fonts.monoBold, fsBinPath);
+		// Bin label ------------------------------------------------------
+		// Bin code is the headline, path beneath, friendly name last.
+		// Auto-sizes the bin code so it fills the available width.
+		const codeCandidates = small ? [14, 12, 11, 10, 9] : [22, 20, 18, 16, 14];
+		const codeSize = fitOneLineSize(label.code, fonts.sansBold, codeCandidates);
+		const pathSize = small ? 6 : 9;
+		const nameSize = small ? 6 : 9;
+
+		let cursorY = (contentTopMm - codeSize / MM - 0.5) * MM;
 
 		page.drawText(label.code, {
-			x: textX,
-			y: yPrimary,
-			size: fsBinCode,
+			x: contentX,
+			y: cursorY,
+			size: codeSize,
 			font: fonts.sansBold,
-			color: rgb(0, 0, 0)
+			color: ink
 		});
+		cursorY -= codeSize + (small ? 1.5 : 3);
 
-		page.drawText(pathFitted, {
-			x: textX,
-			y: ySecondary,
-			size: fsBinPath,
-			font: fonts.monoBold,
-			color: rgb(0.2, 0.2, 0.2)
-		});
-
-		if (label.name) {
-			const nameFitted = fitChars(label.name, fonts.italic, fsTitle);
-			page.drawText(nameFitted, {
-				x: textX,
-				y: yTertiary,
-				size: fsTitle,
-				font: fonts.italic,
-				color: rgb(0.2, 0.2, 0.2)
+		const pathFitted = fitChars(label.path, fonts.monoBold, pathSize);
+		if (cursorY > qrY + 1 * MM) {
+			page.drawText(pathFitted, {
+				x: contentX,
+				y: cursorY,
+				size: pathSize,
+				font: fonts.monoBold,
+				color: inkSoft
 			});
+			cursorY -= pathSize + 2;
+		}
+
+		if (label.name && cursorY > qrY + 1 * MM) {
+			const nameLines = wrapLines(
+				label.name,
+				fonts.italic,
+				nameSize,
+				contentWidthPt,
+				small ? 1 : 2
+			);
+			for (const ln of nameLines) {
+				if (cursorY < qrY + 1 * MM) break;
+				page.drawText(ln, {
+					x: contentX,
+					y: cursorY,
+					size: nameSize,
+					font: fonts.italic,
+					color: inkSoft
+				});
+				cursorY -= nameSize + 1.5;
+			}
 		}
 	}
+
+	// Touch the page-dimension locals so TS doesn't complain when the
+	// renderer body happens not to reference them directly.
+	void widthPt;
+	void heightPt;
 }
 
 /**
@@ -439,259 +582,6 @@ function wrapLines(
 	return out;
 }
 
-interface LargeFormatFonts extends Fonts {
-	italicBold: PDFFont;
-	logoImage: Awaited<ReturnType<PDFDocument['embedPng']>> | null;
-}
-
-/**
- * Large-format label renderer — designed around the Primera LX-610's
- * 2" × 3" color cut. Layout uses the brand logo as the only header
- * (no wordmark text — the logo image itself carries the brand mark).
- *
- * Layout (76mm × 51mm, landscape):
- *
- *   ┌────────────────────────────────────────────┐
- *   │                                  [ LOGO ]  │  top-right corner
- *   │  ┌──────────┐  CAT-BRAND-MODEL-COND-YY-NN  │
- *   │  │          │  A1-A2-A3-A4-A5               │
- *   │  │   QR     │  Item Title (bold)            │
- *   │  │          │  Description text wraps       │
- *   │  │          │  across multiple lines…       │
- *   │  └──────────┘                                │
- *   └────────────────────────────────────────────┘
- *
- * For bin labels the right column shifts to bin code (big) + path +
- * friendly name, mirroring the small-format bin layout.
- *
- * SKU sizing is dynamic — we try the largest font in {9, 8, 7} pt
- * that fits the content width, and only wrap to a second line if
- * even 7pt overflows. Same logic for the attribute line.
- */
-async function renderLargeFormatLabel(
-	doc: PDFDocument,
-	page: PDFPage,
-	label: Label,
-	template: LabelTemplate,
-	fonts: LargeFormatFonts
-): Promise<void> {
-	const widthMm = template.widthMm;
-	const heightMm = template.heightMm;
-	const widthPt = widthMm * MM;
-	const heightPt = heightMm * MM;
-
-	const ink = rgb(0.05, 0.05, 0.05);
-	const inkSoft = rgb(0.25, 0.25, 0.25);
-
-	const padMm = 2.5;
-
-	// ---- Logo: top-right corner, no wordmark --------------------------
-	// Aspect-preserved, capped at 24mm wide × 11mm tall so it stays a
-	// brand accent rather than dominating the label. Stored bounds so
-	// content layout below knows to start under it.
-	let logoBottomMm = heightMm - padMm; // if no logo, "below logo" is the top edge
-	if (fonts.logoImage) {
-		const img = fonts.logoImage;
-		const aspect = img.width / img.height;
-		const MAX_LOGO_WMM = 24;
-		const MAX_LOGO_HMM = 11;
-		let logoWmm = MAX_LOGO_WMM;
-		let logoHmm = logoWmm / aspect;
-		if (logoHmm > MAX_LOGO_HMM) {
-			logoHmm = MAX_LOGO_HMM;
-			logoWmm = logoHmm * aspect;
-		}
-		const logoX = (widthMm - padMm - logoWmm) * MM;
-		const logoY = (heightMm - padMm - logoHmm) * MM;
-		page.drawImage(img, {
-			x: logoX,
-			y: logoY,
-			width: logoWmm * MM,
-			height: logoHmm * MM
-		});
-		logoBottomMm = heightMm - padMm - logoHmm;
-	}
-
-	// ---- QR: left side, anchored bottom-left ---------------------------
-	// Big — the QR is the primary scan target. Caps at 36mm so it fits
-	// the label height with margin to spare even on a portrait crop.
-	const qrSizeMm = Math.min(heightMm - 2 * padMm, 36);
-	const qrSizePt = qrSizeMm * MM;
-	const qrX = padMm * MM;
-	const qrY = padMm * MM;
-
-	const qrPng = await renderQrPng(label.url);
-	const qrImage = await doc.embedPng(qrPng);
-	page.drawImage(qrImage, {
-		x: qrX,
-		y: qrY,
-		width: qrSizePt,
-		height: qrSizePt
-	});
-
-	// ---- Content column: right of QR, below logo -----------------------
-	// Top edge sits ~1.5mm under the logo so content doesn't graze it.
-	// If no logo was supplied we slide it back to padMm for parity with
-	// the original layout.
-	const contentX = qrX + qrSizePt + 3 * MM;
-	const contentRight = (widthMm - padMm) * MM;
-	const contentWidthPt = contentRight - contentX;
-	const contentTopMm = fonts.logoImage ? logoBottomMm - 1.5 : heightMm - padMm;
-
-	// Truncate-to-fit helper for single-line strings.
-	const fitChars = (text: string, font: PDFFont, sizePt: number): string => {
-		const w = font.widthOfTextAtSize(text, sizePt);
-		if (w <= contentWidthPt) return text;
-		let lo = 0;
-		let hi = text.length;
-		while (lo < hi) {
-			const mid = (lo + hi + 1) >>> 1;
-			if (font.widthOfTextAtSize(text.slice(0, mid) + '…', sizePt) <= contentWidthPt) {
-				lo = mid;
-			} else {
-				hi = mid - 1;
-			}
-		}
-		return text.slice(0, lo) + '…';
-	};
-
-	// Pick the largest size from `candidates` that fits one line of
-	// `text` in `font` within `widthPt`. Falls back to the smallest.
-	const fitOneLineSize = (
-		text: string,
-		font: PDFFont,
-		candidates: number[],
-		widthPt: number
-	): number => {
-		for (const s of candidates) {
-			if (font.widthOfTextAtSize(text, s) <= widthPt) return s;
-		}
-		return candidates[candidates.length - 1];
-	};
-
-	if (label.kind === 'item') {
-		// SKU split: base (CAT-BRAND-MODEL-COND-YY-SEQ, 20 chars) on
-		// line 1, attrs (A1-A2-A3-A4-A5) on line 2. The right-side
-		// logo squeezes content width to ~33mm, so we auto-size the
-		// SKU to the largest size that still fits one line.
-		const baseSku = label.sku.slice(0, 20);
-		const attrSku = label.sku.length > 21 ? label.sku.slice(21) : '';
-
-		const skuSize = fitOneLineSize(baseSku, fonts.monoBold, [10, 9, 8, 7], contentWidthPt);
-		const attrSize = attrSku
-			? fitOneLineSize(attrSku, fonts.monoBold, [9, 8, 7], contentWidthPt)
-			: 0;
-		const TITLE_SIZE = 9;
-		const DESC_SIZE = 7;
-
-		// Start 1mm below the content top so the SKU isn't kissing the
-		// logo's bottom edge.
-		let cursorY = (contentTopMm - skuSize / MM - 0.5) * MM;
-
-		page.drawText(baseSku, {
-			x: contentX,
-			y: cursorY,
-			size: skuSize,
-			font: fonts.monoBold,
-			color: ink
-		});
-		cursorY -= skuSize + 3;
-
-		if (attrSku) {
-			page.drawText(attrSku, {
-				x: contentX,
-				y: cursorY,
-				size: attrSize,
-				font: fonts.monoBold,
-				color: inkSoft
-			});
-			cursorY -= attrSize + 4;
-		}
-
-		// Title — bold sans, possibly wrapping onto two lines if it's
-		// long. Cap at 2 lines so the description still has room.
-		const titleLines = wrapLines(label.title, fonts.sansBold, TITLE_SIZE, contentWidthPt, 2);
-		for (const ln of titleLines) {
-			page.drawText(ln, {
-				x: contentX,
-				y: cursorY,
-				size: TITLE_SIZE,
-				font: fonts.sansBold,
-				color: ink
-			});
-			cursorY -= TITLE_SIZE + 2;
-		}
-
-		// Description — wrap into the remaining vertical space. The QR
-		// bottom is at padMm; we stop drawing above that.
-		if (label.description) {
-			cursorY -= 2;
-			const plain = stripHtml(label.description);
-			if (plain) {
-				const lineHeight = DESC_SIZE + 1.5;
-				const remainingPt = cursorY - padMm * MM;
-				const maxLines = Math.max(1, Math.floor(remainingPt / lineHeight));
-				const descLines = wrapLines(plain, fonts.sansFont, DESC_SIZE, contentWidthPt, maxLines);
-				for (const ln of descLines) {
-					page.drawText(ln, {
-						x: contentX,
-						y: cursorY,
-						size: DESC_SIZE,
-						font: fonts.sansFont,
-						color: inkSoft
-					});
-					cursorY -= lineHeight;
-				}
-			}
-		}
-	} else {
-		// Bin label — same content shape as the DYMO bin layout but
-		// scaled up. Bin code is the headline, path/name beneath.
-		let cursorY = (contentTopMm - 7) * MM;
-		const CODE_SIZE = 20;
-		const PATH_SIZE = 9;
-		const NAME_SIZE = 9;
-
-		page.drawText(label.code, {
-			x: contentX,
-			y: cursorY,
-			size: CODE_SIZE,
-			font: fonts.sansBold,
-			color: ink
-		});
-		cursorY -= CODE_SIZE + 2;
-
-		const pathFitted = fitChars(label.path, fonts.monoBold, PATH_SIZE);
-		page.drawText(pathFitted, {
-			x: contentX,
-			y: cursorY,
-			size: PATH_SIZE,
-			font: fonts.monoBold,
-			color: inkSoft
-		});
-		cursorY -= PATH_SIZE + 3;
-
-		if (label.name) {
-			const nameLines = wrapLines(label.name, fonts.italic, NAME_SIZE, contentWidthPt, 2);
-			for (const ln of nameLines) {
-				page.drawText(ln, {
-					x: contentX,
-					y: cursorY,
-					size: NAME_SIZE,
-					font: fonts.italic,
-					color: inkSoft
-				});
-				cursorY -= NAME_SIZE + 2;
-			}
-		}
-	}
-
-	// Pull in the unused-var refs so TS/build doesn't warn about
-	// widthPt/heightPt when the layout above happens not to read them
-	// (defensive — keeps the renderer easy to extend later).
-	void widthPt;
-	void heightPt;
-}
 
 /**
  * Generate a QR code as a PNG byte array, suitable for embedding
