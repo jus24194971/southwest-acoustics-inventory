@@ -1,13 +1,19 @@
 <script lang="ts">
 	import { STYLE_CARDS, VOICE_RULES, type CollectionStyle } from '$lib/squarespace_style_guide';
 
-	// Help content lives as data, not as a forest of templates — adding
-	// a new topic is appending one object to SECTIONS. This mirrors the
-	// pattern in Listing Studio's help.js.
+	// Help is written for Dad — plain English, task-first, no jargon.
+	// Each section answers a question he might actually ask out loud
+	// ("How do I print a label?") and walks him through it.
 	//
-	// Content can use raw HTML (rendered via {@html}) so we can style
-	// inline code, lists, callouts, etc. The strings are trusted since
-	// they're authored in this file, not user input.
+	// Visual aids are inline HTML "mockups" — styled <div>s that look
+	// like the real UI elements (buttons, panels, fields). We don't
+	// embed real screenshots because they go stale fast, but the
+	// mockups stay in sync with the app's design tokens since they
+	// pull from the same CSS variables.
+	//
+	// Content can use raw HTML (rendered via {@html}) — strings are
+	// authored in this file, not user input, so it's trusted.
+
 	interface HelpSection {
 		id: string;
 		icon: string;
@@ -16,11 +22,52 @@
 		content: string;
 	}
 
-	// Build the Squarespace style guide HTML from the shared style
-	// module so this page and the AI suggester can never drift apart.
-	// HTML-escape interpolated values defensively — the cards come from
-	// a static module today, but if they ever pull from the DB the
-	// escaping is already wired.
+	// ---------- Mockup helpers ----------------------------------------
+	// Inline-styled snippets that look like the real UI elements.
+	// Centralized here so the whole help page has a consistent look.
+
+	function btnPrimary(label: string): string {
+		return `<span style="display: inline-block; background: linear-gradient(180deg, var(--color-gold) 0%, var(--color-gold-dim) 100%); border: 1px solid var(--color-gold-dim); color: #1a1612; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);">${label}</span>`;
+	}
+	function btnGhost(label: string): string {
+		return `<span style="display: inline-block; background: var(--color-panel-2); border: 1px solid var(--color-line); color: var(--color-ink); padding: 5px 12px; border-radius: 4px; font-size: 12px;">${label}</span>`;
+	}
+	function field(placeholder: string): string {
+		return `<span style="display: inline-block; min-width: 200px; background: var(--color-input); border: 1px solid var(--color-line-dim); color: var(--color-ink-3); padding: 5px 10px; border-radius: 4px; font-size: 12px; font-style: italic;">${placeholder}</span>`;
+	}
+	function pill(label: string, kind: 'default' | 'success' | 'warn' | 'danger' = 'default'): string {
+		const colors: Record<typeof kind, string> = {
+			default: 'background: rgba(184, 152, 86, 0.12); border: 1px solid var(--color-gold-dim); color: var(--color-gold-bright);',
+			success: 'background: rgba(108, 142, 90, 0.15); border: 1px solid var(--color-moss); color: var(--color-moss-bright);',
+			warn: 'background: rgba(184, 152, 86, 0.18); border: 1px solid var(--color-gold); color: var(--color-gold-bright);',
+			danger: 'background: rgba(170, 80, 60, 0.15); border: 1px solid var(--color-rust); color: var(--color-rust-bright);'
+		};
+		return `<span style="display: inline-block; ${colors[kind]} padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;">${label}</span>`;
+	}
+	function eyebrow(label: string): string {
+		return `<span style="font-family: var(--font-mono, monospace); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-ink-3);">${label}</span>`;
+	}
+	function panel(inner: string): string {
+		return `<div style="border: 1px solid var(--color-line-dim); background: var(--color-panel); padding: 12px 14px; border-radius: 6px; margin: 8px 0;">${inner}</div>`;
+	}
+	function callout(emoji: string, text: string, tone: 'tip' | 'warn' = 'tip'): string {
+		const color = tone === 'warn' ? 'var(--color-rust)' : 'var(--color-gold-dim)';
+		return `<div style="border-left: 3px solid ${color}; background: var(--color-input); padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 12px 0;"><span style="font-size: 18px; margin-right: 6px;">${emoji}</span><span style="color: var(--color-ink-2); font-size: 13px;">${text}</span></div>`;
+	}
+	function tryItLink(href: string, label: string): string {
+		return `<p style="margin-top: 12px;"><a href="${href}" style="display: inline-block; color: var(--color-gold-bright); font-weight: 600; text-decoration: none; border-bottom: 1px solid var(--color-gold-dim); padding-bottom: 1px;">▶ Try it now: ${label}</a></p>`;
+	}
+	function steps(items: string[]): string {
+		const lis = items
+			.map(
+				(s, i) =>
+					`<li style="margin: 10px 0; padding-left: 6px;"><span style="display: inline-block; width: 22px; height: 22px; border-radius: 50%; background: var(--color-gold-dim); color: #1a1612; text-align: center; font-weight: 700; font-size: 12px; line-height: 22px; margin-right: 10px; vertical-align: top;">${i + 1}</span><span style="display: inline-block; width: calc(100% - 50px); vertical-align: top;">${s}</span></li>`
+			)
+			.join('');
+		return `<ol style="list-style: none; padding-left: 0; margin: 12px 0;">${lis}</ol>`;
+	}
+
+	// ---------- Squarespace style guide (auto-generated) --------------
 	function esc(s: string): string {
 		return s
 			.replace(/&/g, '&amp;')
@@ -28,7 +75,6 @@
 			.replace(/>/g, '&gt;')
 			.replace(/"/g, '&quot;');
 	}
-
 	const COLLECTION_ORDER: CollectionStyle[] = [
 		'leo_jaymz',
 		'sw_build',
@@ -41,277 +87,777 @@
 		'accessory',
 		'default'
 	];
-
 	const styleGuideContent = (() => {
 		const parts: string[] = [];
-
 		parts.push(`<p>Dad's Squarespace shop at
-			<a href="https://www.southwestacousticproducts.com/shop"
-				target="_blank"
-				class="text-[color:var(--color-gold-bright)] hover:underline"
-			>southwestacousticproducts.com/shop</a>
-			has a fixed set of conventions for titles and descriptions. The AI description
-			suggester already knows them — use this page when you're writing copy by hand
-			and want to match.</p>`);
-
-		// Voice rules ---------------------------------------------------
-		parts.push('<p><strong>Voice (applies to every listing):</strong></p>');
-		parts.push('<ul>');
+			<a href="https://www.southwestacousticproducts.com/shop" target="_blank" style="color: var(--color-gold-bright);">southwestacousticproducts.com/shop</a>
+			has a fixed set of conventions for titles and descriptions. The AI button already knows them — use this page when you're writing copy by hand and want to match.</p>`);
+		parts.push('<p><strong>Voice (applies to every listing):</strong></p><ul>');
 		for (const r of VOICE_RULES) parts.push(`<li>${esc(r)}</li>`);
-		parts.push('</ul>');
-
-		// Per-collection cards -----------------------------------------
-		parts.push('<p><strong>Per-collection conventions:</strong></p>');
+		parts.push('</ul><p><strong>Per-collection conventions:</strong></p>');
 		for (const key of COLLECTION_ORDER) {
 			const c = STYLE_CARDS[key];
-			parts.push(
-				`<div style="border-left: 3px solid var(--color-gold-dim); padding-left: 0.75rem; margin: 1rem 0;">`
-			);
+			parts.push(`<div style="border-left: 3px solid var(--color-gold-dim); padding-left: 0.75rem; margin: 1rem 0;">`);
 			parts.push(`<p><strong>${esc(c.displayName)}</strong>`);
 			if (c.collectionUrlSlug) {
-				parts.push(
-					` <span class="font-mono text-xs" style="color: var(--color-ink-3)">${esc(c.collectionUrlSlug)}</span>`
-				);
+				parts.push(` <span class="font-mono text-xs" style="color: var(--color-ink-3)">${esc(c.collectionUrlSlug)}</span>`);
 			}
 			parts.push('</p>');
-
-			parts.push(
-				`<p style="margin-top: 0.25rem;">Title pattern:
-				<span class="font-mono text-xs" style="color: var(--color-gold)">${esc(c.titlePattern)}</span></p>`
-			);
-
+			parts.push(`<p style="margin-top: 0.25rem;">Title pattern: <span class="font-mono text-xs" style="color: var(--color-gold)">${esc(c.titlePattern)}</span></p>`);
 			if (c.titleExamples.length > 0) {
 				parts.push('<ul style="margin-top: 0.25rem;">');
 				for (const ex of c.titleExamples) {
-					parts.push(
-						`<li><span class="font-mono text-xs" style="color: var(--color-ink-2)">${esc(ex)}</span></li>`
-					);
+					parts.push(`<li><span class="font-mono text-xs" style="color: var(--color-ink-2)">${esc(ex)}</span></li>`);
 				}
 				parts.push('</ul>');
 			}
-
-			parts.push(
-				`<p style="margin-top: 0.5rem;">
-				<em>Description shape:</em> ${c.descriptionShape === 'structured' ? '<strong>STRUCTURED</strong> — bold headers + bulleted Tech Specs' : '<strong>NARRATIVE</strong> — flowing paragraphs, no headers'}.
-			</p>`
-			);
-
+			parts.push(`<p style="margin-top: 0.5rem;"><em>Description shape:</em> ${c.descriptionShape === 'structured' ? '<strong>STRUCTURED</strong> — bold headers + bulleted Tech Specs' : '<strong>NARRATIVE</strong> — flowing paragraphs, no headers'}.</p>`);
 			parts.push(`<p style="margin-top: 0.25rem; white-space: pre-wrap;">${esc(c.descriptionGuide)}</p>`);
-
 			if (c.closer) {
-				parts.push(
-					`<p style="margin-top: 0.25rem; font-style: italic; color: var(--color-ink-3);">Closer: "${esc(c.closer)}"</p>`
-				);
+				parts.push(`<p style="margin-top: 0.25rem; font-style: italic; color: var(--color-ink-3);">Closer: "${esc(c.closer)}"</p>`);
 			}
 			parts.push('</div>');
 		}
-
 		return parts.join('\n');
 	})();
 
+	// ==================================================================
+	// SECTIONS
+	// ==================================================================
 	const SECTIONS: HelpSection[] = [
+		// ---------- Start here ---------------------------------------
 		{
-			id: 'getting-started',
-			icon: '🏁',
-			title: 'Getting started',
-			subtitle: 'What this app is and how to navigate it',
+			id: 'welcome',
+			icon: '👋',
+			title: 'Start here',
+			subtitle: "What this app is for, in plain words",
 			content: `
-				<p>This is the inventory system for Southwest Acoustics. Every part, body, neck, pickup,
-				and complete guitar lives here — this is the single source of truth, and Squarespace
-				mirrors what's listed here.</p>
-				<p>The top navigation has five main areas:</p>
+				<p style="font-size: 15px; line-height: 1.6;">
+					This is your shop's notebook. Every guitar, every body, every set of strings, every
+					pickup you have — it all goes in here. When you sell something, you tell the
+					notebook. When something new shows up, you add it.
+				</p>
+				<p style="font-size: 15px; line-height: 1.6;">
+					This app is also how new listings get to your website. You enter the item here,
+					and when you're ready, you push it to Squarespace with one button.
+				</p>
+
+				<p style="margin-top: 20px;"><strong>The bar at the top is how you move around.</strong>
+					Here's what each button does, from left to right:</p>
+
+				${panel(`
+					<div style="font-size: 13px; line-height: 2;">
+						<div><strong>Overview</strong> &mdash; the front page. Shows what you have, what sold this week.</div>
+						<div><strong>Items</strong> &mdash; every single thing in the shop. You'll spend most of your time here.</div>
+						<div><strong>Locations</strong> &mdash; the Garage and the Warehouse, and the bins inside them.</div>
+						<div><strong>Labels</strong> &mdash; when a new box comes in, you go here to enter it and print labels.</div>
+						<div><strong>Scan</strong> &mdash; for your phone. Point at a label, find the item.</div>
+						<div><strong>Categories</strong> &mdash; the list of "what kinds of things we sell" (guitars, pickups, strings, etc.).</div>
+						<div><strong>Movements</strong> &mdash; the history book. Every receive, sale, and move shows up here.</div>
+						<div style="margin-top: 8px; color: var(--color-ink-3); font-size: 12px;">
+							On the far right: <strong>Help</strong> (this page) and <strong>Settings</strong>.
+						</div>
+					</div>
+				`)}
+
+				${callout('💡', "If you ever get lost, click the Southwest logo on the top-left to go back to the front page.")}
+
+				<p style="margin-top: 20px;"><strong>The two most common things you'll do:</strong></p>
 				<ul>
-					<li><strong>Overview</strong> — a dashboard with current totals and quick actions.</li>
-					<li><strong>Items</strong> — every part and guitar. Click any row to see its detail page.</li>
-					<li><strong>Locations</strong> — the Garage Workshop and Storage Warehouse. Each has bins.</li>
-					<li><strong>Categories</strong> — taxonomy (Bodies, Necks, Pickups, etc.).</li>
-					<li><strong>Movements</strong> — the audit ledger of every receive / transfer / sale.</li>
+					<li>"I got a new box of something. Where does it go?" → Read <a href="#add-stocked">Adding new parts</a>.</li>
+					<li>"Something sold and the count is wrong." → Read <a href="#fix-count">Fixing a count that's wrong</a>.</li>
 				</ul>
-				<p>Help and Settings live on the right side of the toolbar.</p>
 			`
 		},
+
+		// ---------- Cheat sheet --------------------------------------
 		{
-			id: 'adding-items',
-			icon: '➕',
-			title: 'Adding an item',
-			subtitle: 'How to enter a new part or guitar',
+			id: 'cheat-sheet',
+			icon: '⚡',
+			title: 'Cheat sheet',
+			subtitle: 'The 5 most common things, on one page',
 			content: `
-				<p>Go to <strong>Items → Add item</strong>. The form picks the category-specific attribute
-				fields automatically based on what category you pick — for example, choosing
-				<strong>Pickups</strong> reveals fields for Type, Position, Brand, Output, and Active/passive.</p>
-				<p>You only need to fill in:</p>
-				<ol>
-					<li><strong>Title</strong> — a human description (e.g. "Seymour Duncan JB Jr, neck position")</li>
-					<li><strong>Category</strong> — what kind of thing it is</li>
-					<li><strong>Condition</strong> — New, Used, Refurbished, or Broken/parts</li>
-					<li><strong>Model</strong> — a 3-letter code used in the SKU</li>
-				</ol>
-				<p>The SKU is generated for you in the format
-				<span class="font-mono">CAT-BRAND-MODEL-COND-YY-SEQ-A1-A2-A3-A4-A5</span> — 40 characters,
-				always the same length. See the <a href="#sku">SKU primer</a> below for what each part means.</p>
-				<p>If a part is something you have many of (like screws or knobs), pick
-				<strong>Stocked</strong> for tracking mode and set the on-hand count. One row covers all of them.</p>
+				<p>Quick reference — each one links to the full step-by-step further down.</p>
+
+				${panel(`
+					<p style="margin: 0;"><strong>1. New box came in — guitar, parts, anything</strong></p>
+					<p style="margin: 4px 0 0 0; font-size: 13px; color: var(--color-ink-3);">
+						Top bar → <strong>Labels</strong> → fill out form → click Save & print.
+						See <a href="#add-guitar">Adding a guitar</a> or <a href="#add-stocked">Adding parts</a>.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>2. Find something you already have</strong></p>
+					<p style="margin: 4px 0 0 0; font-size: 13px; color: var(--color-ink-3);">
+						Type into the search bar at the top — it searches names, brands, descriptions.
+						Or scan a label with your phone (<strong>Scan</strong> button).
+						See <a href="#find">Finding something</a>.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>3. Mark something as sold (or fix the count)</strong></p>
+					<p style="margin: 4px 0 0 0; font-size: 13px; color: var(--color-ink-3);">
+						Find the item → its detail page → "On hand" panel on the right → Adjust.
+						See <a href="#fix-count">Fixing a count</a>.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>4. Add or change photos on an item</strong></p>
+					<p style="margin: 4px 0 0 0; font-size: 13px; color: var(--color-ink-3);">
+						Open the item → "Manage photos" panel below the photo → pick photos to upload.
+						See <a href="#photos">Adding photos</a>.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>5. Put a new listing on the website</strong></p>
+					<p style="margin: 4px 0 0 0; font-size: 13px; color: var(--color-ink-3);">
+						Item detail → sidebar Listings → click <strong>Squarespace</strong> → fill out → Push.
+						Or use the AI button (✨ Suggest with AI) to draft the title and description.
+						See <a href="#post-website">Posting to the website</a>.
+					</p>
+				`)}
 			`
 		},
+
+		// ---------- Adding a guitar ---------------------------------
 		{
-			id: 'sku',
+			id: 'add-guitar',
+			icon: '🎸',
+			title: 'Adding a new guitar',
+			subtitle: "When a complete guitar comes in",
+			content: `
+				<p><strong>The scenario:</strong> A Leo Jaymz guitar showed up. You want to enter it,
+				print a label, and stick the label on the case.</p>
+
+				${steps([
+					`Up on the top bar, click <strong>Labels</strong>. This is the page for "I have something physical here, and I want to add it and print a label all at once".`,
+					`The form opens. You'll see a bunch of fields. Don't worry — only some are required (they have a red asterisk).`,
+					`<strong>Category</strong> — pick the right one. For a Leo Jaymz guitar, pick <strong>LJ — Leo Jaymz Guitars</strong>. For one of your own builds, pick <strong>SA — Southwest Acoustics Builds</strong>.`,
+					`<strong>Title</strong> — type a friendly description. Example: <span style="font-family: monospace; color: var(--color-ink);">"Leo Jaymz Monsoon Ocean Blue Double Cut"</span>. Doesn't have to be the final website title — you can prettier it later.`,
+					`<strong>Brand</strong> — pick from the dropdown if it's there, or type a 3-letter code (LEO for Leo Jaymz, SWA for Southwest, etc.).`,
+					`<strong>Model</strong> — short code like <span style="font-family: monospace;">MNS</span> for Monsoon, <span style="font-family: monospace;">HUR</span> for Hurricane. Used in the printed label.`,
+					`<strong>Condition</strong> — New, Used, Refurbished, or For parts. Pick what's true.`,
+					`<strong>Tracking mode</strong> — for a single guitar, pick <strong>Serialized</strong>. (One row per guitar.)`,
+					`<strong>Bin</strong> — where in the shop is it going? Pick from the dropdown. If you don't know yet, leave it as "unassigned" and assign it later.`,
+					`Below that, the form shows extra fields based on the category you picked — things like Color, Body Style, Pickups. Fill in what you know.`,
+					`<strong>Quantity</strong> = 1 for one guitar. <strong>Labels per item</strong> = 1 unless you want spare labels.`,
+					`Click the gold button at the bottom: ${btnPrimary('Save and print labels')}. A new browser tab opens with the PDF label — print it on your DYMO or Primera.`
+				])}
+
+				${callout('💡', `The long code that gets generated (something like <span style="font-family: monospace;">LJ-LEO-MNS-N-26-0001</span>) is the item's permanent ID. It's on the label as a QR code so your phone can scan it.`)}
+
+				${tryItLink('/labels', 'open the Labels page')}
+			`
+		},
+
+		// ---------- Adding parts (stocked) --------------------------
+		{
+			id: 'add-stocked',
+			icon: '📦',
+			title: 'Adding new parts (strings, knobs, etc.)',
+			subtitle: 'When you have many of the same thing',
+			content: `
+				<p><strong>The scenario:</strong> A case of 12 sets of D'Addario strings came in.
+				You don't need 12 separate rows — you want one row that says "I have 12 of these".</p>
+
+				${steps([
+					`Click <strong>Labels</strong> on the top bar.`,
+					`Fill in the basics like for a guitar — <strong>Category</strong> (ST for strings, AC for accessories, etc.), <strong>Title</strong> (e.g. "D'Addario EXL120 9-42 Electric Strings"), <strong>Brand</strong>, <strong>Model</strong>, <strong>Condition</strong>.`,
+					`Here's the important part: <strong>Tracking mode</strong> → pick <strong>Stocked</strong>. This means "one row, with a count, instead of one row per pack".`,
+					`<strong>Quantity</strong> = 12 (or however many came in).`,
+					`<strong>Labels per item</strong> — if you want one label for the case, leave at 1. If you want a label for every pack, set this to 12.`,
+					`Click ${btnPrimary('Save and print labels')}.`
+				])}
+
+				${callout('💡', `Later, when one set sells, you'll go to the item's page and change the on-hand count from 12 to 11. See <a href="#fix-count">Fixing a count</a>.`)}
+
+				<p style="margin-top: 20px;"><strong>When should I use Stocked vs Serialized?</strong></p>
+				<ul>
+					<li><strong>Serialized</strong> — one row per physical thing. Use for guitars, expensive pickup sets, anything where each one is unique. Selling one means retiring that exact row.</li>
+					<li><strong>Stocked</strong> — one row with a count. Use for strings, screws, knobs, common hardware. Selling one means decrementing the count.</li>
+				</ul>
+
+				${tryItLink('/labels', 'open the Labels page')}
+			`
+		},
+
+		// ---------- Finding something -------------------------------
+		{
+			id: 'find',
+			icon: '🔍',
+			title: 'Finding something',
+			subtitle: 'Three ways to look up an item',
+			content: `
+				<p>You've got three ways to find any item. Use whichever's closest to hand.</p>
+
+				<p style="margin-top: 18px;"><strong>Way 1: Type into the search bar at the top.</strong></p>
+				<p>The search bar is on every page, in the top toolbar — it looks like:</p>
+				${panel(`<div style="display: inline-block; background: var(--color-input); border: 1px solid var(--color-line-dim); color: var(--color-ink-3); padding: 6px 12px; border-radius: 4px; font-size: 13px; font-style: italic; min-width: 280px;">Search SKU, title, brand…</div>`)}
+				<p>Type the brand, the color, the model — anything you remember. Hit Enter. You'll land on the Items page with matches.</p>
+
+				<p style="margin-top: 18px;"><strong>Way 2: Click "Items" and use the filters.</strong></p>
+				<p>Top bar → <strong>Items</strong>. Under the search bar, you'll see filter dropdowns:
+					Category, Condition, Location, Tracking. Pick whatever narrows it down.</p>
+				<p>For example, "Show me all Leo Jaymz guitars in the Garage": pick
+					<strong>Category: Leo Jaymz</strong> and <strong>Location: GAR</strong>.</p>
+
+				<p style="margin-top: 18px;"><strong>Way 3: Scan a label with your phone.</strong></p>
+				<p>If you have the item in your hand and there's a printed label on it:</p>
+				${steps([
+					`Open the inventory app on your phone.`,
+					`Tap <strong>Scan</strong> in the top bar.`,
+					`Allow camera access if it asks.`,
+					`Point your phone at the QR code on the label. The page jumps straight to that item.`
+				])}
+
+				${callout('💡', `Every label has a QR code that links right to that item's page. Scan it and you're there in two seconds.`)}
+
+				${tryItLink('/items', 'open the Items list')}
+			`
+		},
+
+		// ---------- Photos -------------------------------------------
+		{
+			id: 'photos',
+			icon: '📷',
+			title: 'Adding photos to an item',
+			subtitle: 'Upload, set primary, delete',
+			content: `
+				<p><strong>The scenario:</strong> You just took photos of a new guitar with your phone
+				and want to add them to its page so they show up on the listing.</p>
+
+				${steps([
+					`Find the item — search bar, scan, or click through Items. Click its row to open the detail page.`,
+					`Scroll down past the photo area. You'll see a panel titled <strong>Manage photos</strong> on the right side. It has a dashed box that says "📷 Choose photos to upload".`,
+					`Click that dashed box. Your computer's file picker opens.`,
+					`Pick the photos. Hold Ctrl (or Cmd on Mac) to select multiple. Click Open.`,
+					`The photos upload automatically — no separate Submit button. When done, they appear in the grid above.`
+				])}
+
+				<p style="margin-top: 18px;"><strong>The "Primary" photo:</strong></p>
+				<p>The first photo (top-left, with a gold "Primary" badge) is the one that shows up on
+				the Items list, the dashboard, and the website. To pick a different one as primary:</p>
+				${steps([
+					`Click the thumbnail you want as primary — it'll get a gold border.`,
+					`Below the gallery, click ${btnGhost('★ Make primary')}.`
+				])}
+
+				<p style="margin-top: 18px;"><strong>Deleting a bad photo:</strong></p>
+				${steps([
+					`Click the bad thumbnail so it's selected.`,
+					`Click the red <span style="color: var(--color-rust-bright);">✕ Delete</span> button. Confirm.`
+				])}
+
+				${callout('💡', `Deleting is "soft" — the photo isn't gone forever, just hidden. If you need it back, ask Justin.`)}
+
+				${callout('⚠️', `Photos can be up to 15 MB each. You can upload up to 20 at a time. JPG, PNG, WEBP all work — but iPhone HEIC files won't. Convert first.`, 'warn')}
+			`
+		},
+
+		// ---------- Fixing a count ----------------------------------
+		{
+			id: 'fix-count',
+			icon: '🔢',
+			title: "Fixing a count that's wrong",
+			subtitle: 'When something sold off-website or got miscounted',
+			content: `
+				<p><strong>The scenario:</strong> Something sold on eBay or you sold it cash at the
+				shop, and you forgot to mark it. Now the count in the app says 7 but there are really
+				only 4 left.</p>
+
+				${steps([
+					`Find the item (search bar, or click through Items).`,
+					`On its detail page, look at the right sidebar. You'll see a panel called <strong>On hand</strong> showing the current count in big numbers.`,
+					panel(`
+						<div style="display: flex; align-items: baseline; justify-content: space-between;">
+							${eyebrow('ON HAND')}
+							<span style="color: var(--color-gold-bright); font-size: 11px;">Adjust</span>
+						</div>
+						<div style="font-family: monospace; font-size: 22px; color: var(--color-ink); margin-top: 4px;">7</div>
+						<div style="font-size: 11px; font-style: italic; color: var(--color-ink-3); margin-top: 4px;">Off-platform sale, miscount, or breakage — click Adjust to fix.</div>
+					`),
+					`Click the gold <strong>Adjust</strong> link in that panel.`,
+					`A small form opens. <strong>New quantity</strong> — type the real count (4 in our example). Or click the ${btnGhost('0')} button if it's all gone.`,
+					`<strong>Reason</strong> — pick what fits:
+						<ul style="margin-top: 6px; font-size: 13px;">
+							<li><em>Sold off-platform</em> — eBay, Reverb, cash sale, etc.</li>
+							<li><em>Count correction</em> — we just miscounted</li>
+							<li><em>Damaged / discarded</em> — broken, thrown out</li>
+							<li><em>Found extra</em> — we found more than we thought</li>
+							<li><em>Other</em> — anything else</li>
+						</ul>`,
+					`<strong>Note</strong> (optional) — order number, buyer name, anything you want to remember later.`,
+					`Click ${btnPrimary('Save adjustment')}.`
+				])}
+
+				${callout('💡', "The change shows up in that item's history (scroll down on the same page to <strong>Provenance</strong>) so you can always see what happened. Nothing gets erased — every change leaves a trace.")}
+
+				<p style="margin-top: 18px;"><strong>For serialized items (guitars, etc.) instead:</strong></p>
+				<p>A complete guitar that got sold needs to be <strong>Retired</strong>, not "adjusted to zero":</p>
+				${steps([
+					`Open the guitar's page.`,
+					`Bottom of the right sidebar: click ${btnGhost('Retire item')}.`,
+					`Pick reason: <em>Sold</em>, <em>Scrap</em>, or <em>Used in a build</em>.`,
+					`Note the order number or where it went. Click ${btnPrimary('Retire')}.`
+				])}
+			`
+		},
+
+		// ---------- Transferring ------------------------------------
+		{
+			id: 'move',
+			icon: '↔️',
+			title: 'Moving something to a different place',
+			subtitle: 'Changing the bin or location',
+			content: `
+				<p><strong>The scenario:</strong> You moved a guitar from the workshop bench to the
+				warehouse shelf, or shifted strings from one drawer to another.</p>
+
+				${steps([
+					`Find the item and open its detail page.`,
+					`Right sidebar, top panel: <strong>Location</strong>. Shows where it lives now.`,
+					`Click ${btnGhost('Transfer')} (or ${btnGhost('Assign bin')} if it doesn't have one yet).`,
+					`A dropdown opens with every bin in every location. Pick the new spot.`,
+					`Optional: type a note about why you moved it.`,
+					`Click ${btnPrimary('Save')}.`
+				])}
+
+				${callout('💡', "Like everything else, this leaves a record in the Provenance section of the item — so you can see when it was where.")}
+			`
+		},
+
+		// ---------- Labels -------------------------------------------
+		{
+			id: 'print-labels',
 			icon: '🏷️',
-			title: 'SKU primer',
-			subtitle: 'What every part of an SKU means',
+			title: 'Printing labels',
+			subtitle: 'For items and for bins',
 			content: `
-				<p>SKUs are 40 characters in a fixed format:</p>
-				<pre class="rounded bg-[color:var(--color-input)] p-3 font-mono text-xs">CAT - BRAND - MODEL - COND - YY - SEQ  - A1  - A2  - A3  - A4  - A5
- 2     3       3       1     2    4      3     3     3     3     3</pre>
-				<p>For example, <span class="font-mono text-[color:var(--color-gold)]">PU-SEY-JBJ-U-26-0017-HUM-NEK-SEY-MED-PAS</span> reads as:</p>
+				<p>Two kinds of labels: one for an item (sticks on the guitar or part), and one for
+				a bin (sticks on the shelf or drawer). Both have QR codes.</p>
+
+				<p style="margin-top: 18px;"><strong>Printing an item label (one item):</strong></p>
+				${steps([
+					`Open the item's page.`,
+					`Top-right of the title section: click ${btnGhost('Print label')}.`,
+					`A new tab opens with the PDF. Hit Ctrl+P or Cmd+P, pick your DYMO or Primera, print.`
+				])}
+
+				<p style="margin-top: 18px;"><strong>Printing item labels in a batch (when receiving):</strong></p>
+				<p>If you're entering a new box of stuff, use the Labels page — it makes the items
+					and prints labels all at once. See <a href="#add-guitar">Adding a guitar</a> or
+					<a href="#add-stocked">Adding parts</a>.</p>
+
+				<p style="margin-top: 18px;"><strong>Printing a bin label:</strong></p>
+				${steps([
+					`Top bar: <strong>Locations</strong>.`,
+					`Click a location (e.g. GAR).`,
+					`Find the bin in the list. Click ${btnGhost('Print label')} next to it.`,
+					`PDF opens — print it on your label printer.`
+				])}
+
+				<p style="margin-top: 18px;"><strong>Picking which label size to print on:</strong></p>
+				<p>The Labels page has a dropdown for <strong>Label size</strong>. The options are:</p>
 				<ul>
-					<li><strong>PU</strong> — Pickup</li>
-					<li><strong>SEY</strong> — Seymour Duncan</li>
-					<li><strong>JBJ</strong> — JB Jr model</li>
-					<li><strong>U</strong> — Used</li>
-					<li><strong>26</strong> — Received in 2026</li>
-					<li><strong>0017</strong> — 17th pickup received this year</li>
-					<li><strong>HUM</strong> — Humbucker type</li>
-					<li><strong>NEK</strong> — Neck position</li>
-					<li><strong>SEY</strong> — Seymour Duncan brand</li>
-					<li><strong>MED</strong> — Medium output</li>
-					<li><strong>PAS</strong> — Passive</li>
+					<li><strong>DYMO LW Durable 19×64mm</strong> — your small DYMO labels, the everyday choice</li>
+					<li><strong>DYMO 30320 (1″ × 3.5″)</strong> — slightly bigger DYMO size</li>
+					<li><strong>Primera LX-610 Color 2″ × 3″</strong> — full-color, includes the logo + a short description</li>
 				</ul>
-				<p>The attribute slots (A1–A5) mean different things depending on the category. The Add
-				Item form shows you the right labels for whichever category you pick.</p>
-				<p><strong>Special codes:</strong></p>
-				<ul>
-					<li><span class="font-mono">XXX</span> — "no value" / not meaningful for this item</li>
-					<li><span class="font-mono">UNQ</span> — "one-of-a-kind" — there's a freeform description on the item</li>
-				</ul>
+
+				${callout('💡', "Color labels on the Primera look great on the showroom side, but cost more per label. DYMO is fine for everyday inventory work.")}
 			`
 		},
+
+		// ---------- Locations ---------------------------------------
 		{
 			id: 'locations',
 			icon: '📍',
-			title: 'Locations & bins',
-			subtitle: 'Where things physically live',
+			title: 'Setting up locations and bins',
+			subtitle: 'Adding shelves, drawers, and rooms',
 			content: `
-				<p>Two locations are seeded:</p>
+				<p><strong>The vocabulary:</strong></p>
 				<ul>
-					<li><strong>GAR — Garage Workshop</strong> — Dad's main work area</li>
-					<li><strong>WHS — Storage Warehouse</strong> — overflow + bulk storage</li>
+					<li><strong>Location</strong> = a building or area, like GAR (Garage) or WHS (Warehouse).</li>
+					<li><strong>Bin</strong> = a specific shelf, drawer, or box inside a location. Like A-12 or DRAWER-3.</li>
 				</ul>
-				<p>Inside each location, you add <strong>bins</strong> — shelves, drawers, boxes — and
-				give each one a short code like <span class="font-mono">A-12</span> or
-				<span class="font-mono">DRAWER-3</span>. Items live in exactly one bin at a time.</p>
-				<p>From <strong>Locations → [click a location]</strong> you can:</p>
-				<ul>
-					<li><strong>Add a single bin</strong> with code + optional friendly name + notes</li>
-					<li><strong>Bulk-add a range</strong> — type a prefix like <span class="font-mono">A-</span>
-					and a range like 1-10 to make <span class="font-mono">A-1</span> through
-					<span class="font-mono">A-10</span> in one click</li>
-					<li><strong>Edit or retire</strong> existing bins (retiring is soft-delete — the history
-					of items that used to live there stays intact)</li>
+
+				<p style="margin-top: 18px;"><strong>Adding a new location:</strong></p>
+				${steps([
+					`Top bar: <strong>Locations</strong>.`,
+					`Click the gold ${btnPrimary('+ Add location')} button in the top right.`,
+					`<strong>Code</strong> — 2 to 4 uppercase letters. Like <span style="font-family: monospace;">SHED</span> or <span style="font-family: monospace;">SHOW</span>.`,
+					`<strong>Friendly name</strong> — what it actually is. Like "Back Yard Shed" or "Showroom".`,
+					`Click ${btnPrimary('Create location')}.`
+				])}
+
+				<p style="margin-top: 18px;"><strong>Adding bins inside a location:</strong></p>
+				${steps([
+					`<strong>Locations</strong> → click the location.`,
+					`Two options: <em>Add a single bin</em> (one shelf at a time) or <em>Bulk add a range</em> (like A-1 through A-10 in one click).`,
+					`For single: type a code (e.g. <span style="font-family: monospace;">A-12</span>) and an optional friendly name. Click Add.`,
+					`For bulk: type a prefix (e.g. <span style="font-family: monospace;">A-</span>), a range (e.g. 1 to 10). It makes A-1, A-2, … A-10 all at once.`
+				])}
+
+				<p style="margin-top: 18px;"><strong>Retiring a location or bin:</strong></p>
+				<p>When you stop using a spot, you can retire it. It hides from all the dropdowns but
+					nothing gets erased — the history of what used to be there stays intact.</p>
+				${steps([
+					`On the Locations page (or a bin row): click <strong>Retire</strong>.`,
+					`Confirm.`,
+					`Retired locations show in a "Retired" section at the bottom — you can bring them back with <strong>Unretire</strong> anytime.`
+				])}
+
+				${tryItLink('/locations', 'open the Locations page')}
+			`
+		},
+
+		// ---------- Posting to website ------------------------------
+		{
+			id: 'post-website',
+			icon: '🌐',
+			title: 'Putting an item on the website',
+			subtitle: 'Pushing a listing to Squarespace',
+			content: `
+				<p><strong>The scenario:</strong> A guitar is set up and ready. You want it on the
+				Southwest Acoustics website so customers can buy it.</p>
+
+				${callout('⚠️', "Nothing pushes to your website automatically. You're always in control — the item won't appear on Squarespace until you click the Push button.", 'warn')}
+
+				${steps([
+					`Open the item's detail page.`,
+					`On the right sidebar, find the <strong>Listings</strong> panel.`,
+					panel(`
+						<div>${eyebrow('LISTINGS')}</div>
+						<div style="display: flex; align-items: baseline; gap: 8px; margin-top: 6px;">
+							<span style="font-size: 13px; font-weight: 500; color: var(--color-ink);">Squarespace</span>
+							${pill('Not listed', 'default')}
+							<span style="margin-left: auto; font-size: 10px; color: var(--color-ink-3);">Edit →</span>
+						</div>
+					`),
+					`Click on <strong>Squarespace</strong>. The listing editor opens.`,
+					`<strong>Listing title</strong> — what shows on the website. Often longer and more keyword-heavy than the internal title.`,
+					`<strong>Listing description</strong> — the body text. Either type it yourself in the rich-text editor (with the toolbar for bold, lists, etc.), OR use the AI button (see <a href="#ai-listings">Getting AI to write listings</a>).`,
+					`<strong>URL slug</strong> — the bit that goes at the end of the website URL. Leave blank to auto-generate from the title.`,
+					`<strong>Listing price</strong> — leave blank to use the item's internal price, or override with a different price for the website.`,
+					`<strong>Tags</strong> — comma-separated, optional. Helps with website search.`,
+					`<strong>Squarespace storefront</strong> — pick which page of your shop it goes on (e.g. "Leo Jaymz Guitars" or "Parts and Accessories").`,
+					`<strong>Visible on Squarespace</strong> — checked means live and visible. Uncheck to push as hidden/paused.`,
+					`Bottom: two save buttons (${btnGhost('Save as draft')} or ${btnGhost('Save as ready')}) just save locally without pushing. The push button is on the right: ${btnPrimary('Push to Squarespace')}.`
+				])}
+
+				${callout('💡', `If this is the first time pushing this item, Squarespace creates a new product. If it's already on Squarespace, "Push" updates the existing one — title, description, price, etc.`)}
+
+				<p style="margin-top: 18px;"><strong>The status pill at the top tells you what state the listing is in:</strong></p>
+				<ul style="line-height: 2;">
+					<li>${pill('Draft', 'default')} — saved locally, not on Squarespace yet</li>
+					<li>${pill('Ready to push', 'warn')} — saved and marked ready, still not on Squarespace</li>
+					<li>${pill('Live on Squarespace', 'success')} — pushed and live</li>
+					<li>${pill('Paused (hidden)', 'default')} — on Squarespace but hidden from customers</li>
+					<li>${pill('Last push errored', 'danger')} — something went wrong on the last push, check the red banner</li>
 				</ul>
 			`
 		},
+
+		// ---------- AI listings -------------------------------------
 		{
-			id: 'tracking',
-			icon: '📦',
-			title: 'Serialized vs Stocked',
-			subtitle: 'Two ways to track inventory',
+			id: 'ai-listings',
+			icon: '✨',
+			title: 'Getting AI to write listings',
+			subtitle: 'Title + description with a single button',
 			content: `
-				<p>Every item has a <strong>tracking mode</strong>:</p>
-				<ul>
-					<li><strong>Serialized</strong> — one row per physical object. Use this for guitars,
-					premium pickups, custom builds — anything where each unit is unique or expensive enough
-					to track individually.</li>
-					<li><strong>Stocked</strong> — one row represents a count of identical items. Use this
-					for knobs, screws, strings, common hardware — anything where "I have 47 of these"
-					is the answer Dad needs.</li>
-				</ul>
-				<p>For stocked items, scanning a part out decrements the count instead of retiring an
-				individual row.</p>
+				<p><strong>The scenario:</strong> You don't want to write a 300-word description
+				from scratch. You want a robot to write a first draft, and you'll tweak it.</p>
+
+				${steps([
+					`Open the item's listing page (Item detail → Listings → Squarespace).`,
+					`Look at the right side of the "Listing description" header. There's a button: ${btnGhost('✨ Suggest with AI')}.`,
+					`Click it. A big window opens in the middle of the screen. Right away, the AI starts writing — you'll see a pulsing gold dot while it works.`,
+					`In about 5 seconds, it shows you:
+						<ul style="margin-top: 6px;">
+							<li>A <strong>proposed title</strong> at the top</li>
+							<li>A <strong>proposed description</strong>, fully styled with bold and bullets as it'll look on the website</li>
+						</ul>`,
+					`Read it. If it looks great, click the gold ${btnPrimary('Use these — title + description')} button at the bottom-right. The window closes and both fields are filled in for you.`,
+					`If you want changes, type plain English into the box on the right ("Anything you want changed?"). Examples:
+						<ul style="margin-top: 6px; font-size: 13px; color: var(--color-ink-2);">
+							<li>"Make it shorter"</li>
+							<li>"Drop the Free Shipping line"</li>
+							<li>"Emphasize the weight — it's 5.4 lb"</li>
+							<li>"Use rosewood not maple in the tech specs"</li>
+							<li>"More technical, less marketing"</li>
+						</ul>`,
+					`Click ${btnPrimary('↻ Regenerate with these changes')}. The AI takes your previous draft + your instructions and produces a new version.`,
+					`Iterate as many times as you want. When happy, click ${btnPrimary('Use these — title + description')}.`,
+					`Back on the listing page, the title and description are populated. Edit anything you want by hand, then Push as usual.`
+				])}
+
+				${callout('💡', "The AI knows the style conventions for your different collections. A Leo Jaymz item gets a structured description with Tech Specs bullets. A parts item gets short narrative paragraphs. It looks at the live site to learn the rules.")}
+
+				${callout('⚠️', "The AI sometimes makes up specs that aren't in the item's data. Always read it before pushing. If a spec looks fishy, change it in the textarea ('Use rosewood not maple') and regenerate, or fix it by hand after clicking Use these.", 'warn')}
+
+				<p style="margin-top: 18px;"><strong>If the AI button is greyed out:</strong></p>
+				<p>That means the AI key isn't set up. Justin needs to configure it — that's a one-time
+					thing on the server side, not something you can fix.</p>
 			`
 		},
+
+		// ---------- Glossary ----------------------------------------
 		{
-			id: 'squarespace',
-			icon: '🔄',
-			title: 'Squarespace import',
-			subtitle: 'Bootstrapping from the existing catalog',
+			id: 'glossary',
+			icon: '📖',
+			title: 'What does this word mean?',
+			subtitle: 'A glossary of the tech vocabulary',
 			content: `
-				<p>The first time we ran this, we pulled Dad's full Squarespace catalog into inventory.
-				Every Squarespace product variant became an inventory item. Photos got downloaded into
-				R2 so we own copies. The original Squarespace product ID, variant ID, and SKU all get
-				stored as cross-references.</p>
-				<p>To re-run the import (Dad added new products on Squarespace, or you want to refresh
-				prices/descriptions), go to
-				<a href="/import/squarespace" class="text-[color:var(--color-gold-bright)] hover:underline">/import/squarespace</a>
-				and click <strong>Continue / refresh import</strong>. The importer is idempotent —
-				existing items get their metadata refreshed, new ones get created, nothing gets duplicated.</p>
-				<p>If some items are missing photos, click <strong>Backfill missing photos</strong> — it
-				re-scans the catalog and fetches just the gaps.</p>
-				<p>All imported items default to category <strong>MS (Misc / Consumables)</strong>. You
-				need to recategorize them — go to the item's detail page, click "Change category" in
-				the sidebar.</p>
+				<p>Plain-English explanations of the words that keep showing up.</p>
+
+				${panel(`
+					<p style="margin: 0;"><strong>SKU</strong> <span style="color: var(--color-ink-3); font-size: 12px;">(say it: "skew")</span></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">The long code on every item, like <span style="font-family: monospace;">LJ-LEO-MNS-N-26-0001</span>. Each item has its own unique code that never changes. It's what the QR code on the label points to.</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Item</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">One thing in the shop. Could be a guitar, a body, a bag of strings, a pickup. Each item has its own page.</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Category</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">What kind of thing it is. Like "Leo Jaymz Guitar" or "Strings" or "Pickups". Categories also affect what info shows up on the item form (a pickup needs an "output rating", a guitar doesn't).</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Location</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">A building or area where things live. Right now: GAR (Garage workshop) and WHS (Storage warehouse).</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Bin</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">A specific shelf, drawer, or container inside a location. Like A-12 or DRAWER-3. An item lives in exactly one bin at a time.</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Serialized vs Stocked</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">Two ways to track inventory.<br>
+						<strong>Serialized</strong> = one row per physical thing. Each guitar gets its own row.<br>
+						<strong>Stocked</strong> = one row with a count. "I have 47 of these strings" is one row.</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Retire</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">Mark an item as no longer in inventory. Used when a guitar is sold, scrapped, or used in a build. The item doesn't disappear — it just gets hidden from the main list. You can un-retire it later if needed.</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Movement / Provenance</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">A history entry. Every receive, sale, transfer, or count adjustment makes a movement. The list of movements for one item is called its provenance — its life story.</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Listing</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">A product on a website. The thing customers see and buy on Squarespace. The item in your inventory is the source — the listing is the version that's on the storefront.</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Push</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">Send a listing to Squarespace. Creates a new product or updates an existing one. Nothing pushes automatically — you click a button.</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>Attribute</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">A specific feature of an item — like "Color: Blue Burl" or "Pickup type: Humbucker". Different categories have different attributes. The form shows the right ones based on the category you pick.</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>UNQ</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">"Unique" / one-of-a-kind. Use this when an attribute can't be picked from a list (like a custom finish that doesn't have a name). A description box appears where you can write what it is in your own words.</p>
+				`)}
 			`
 		},
+
+		// ---------- Troubleshooting ---------------------------------
 		{
-			id: 'movements',
-			icon: '📊',
-			title: 'Movements & stock-on-hand',
-			subtitle: 'How quantities get tracked',
+			id: 'troubleshooting',
+			icon: '🤔',
+			title: 'When something looks weird',
+			subtitle: "What to do when things don't behave",
 			content: `
-				<p><strong>Stock-on-hand is never stored directly.</strong> It's derived from the
-				<strong>movement</strong> ledger — every receive, transfer, sale, scrap, and build-consume
-				is one row.</p>
-				<p>You can see the full ledger at <a href="/movements" class="text-[color:var(--color-gold-bright)] hover:underline">/movements</a>,
-				or per-item on each item's detail page.</p>
-				<p>The advantage: the audit trail is impossible to disagree with the count. If you ever
-				wonder "where did this 7 come from," you can scroll back through the movements.</p>
-				<p>You can't edit a movement — it's append-only. To correct a mistake, log an
-				<strong>adjust</strong> movement with a note explaining what changed.</p>
+				<p>Common things that confuse people, and how to fix them.</p>
+
+				${panel(`
+					<p style="margin: 0;"><strong>"I can't find an item I know is there"</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">
+						Try the search bar at the top. If still nothing, click <strong>Items</strong> and
+						look at the filter chips below the search box — maybe a filter is set that's hiding
+						it. Click the "Clear all" button to remove all filters.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>"The count on an item is wrong"</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">
+						See <a href="#fix-count">Fixing a count</a>. Always leave a reason — it makes
+						the history readable later.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>"A photo won't load"</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">
+						Refresh the page (Ctrl+R or Cmd+R). If still broken, delete the photo and re-upload.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>"I uploaded an iPhone photo and it failed"</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">
+						iPhones save photos as HEIC by default, which the web can't read. Either change
+						your iPhone setting to "Most Compatible" (Settings → Camera → Formats), or
+						convert the file to JPG before uploading.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>"The Push to Squarespace button isn't working"</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">
+						Check for a red banner at the top of the listing page — it'll tell you what went
+						wrong. Common causes: missing storefront page selection, no description, or the
+						Squarespace API key needs renewing. Justin can fix the API key.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>"The AI button is greyed out"</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">
+						The ANTHROPIC_API_KEY isn't configured for this environment. Justin needs to
+						set it — it's a server-side configuration, not something you can fix from here.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>"I retired the wrong item"</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">
+						Open the retired item's page (find it via search). Sidebar shows a "Retired" panel
+						with a ${btnGhost('Bring back')} button. Click it.
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>"The label printer is doing weird things"</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">
+						Check that <strong>Label size</strong> in the print dialog matches the labels actually
+						in the printer. Wrong size = misaligned labels. Also, the print scaling option
+						should be set to "100%" or "Actual size" — not "Fit to page".
+					</p>
+				`)}
+
+				${panel(`
+					<p style="margin: 0;"><strong>"The whole page looks broken / froze"</strong></p>
+					<p style="margin: 6px 0 0 0; font-size: 13px;">
+						Refresh the page (Ctrl+R). Still broken? Close the browser tab and reopen it
+						from a bookmark. If still broken, text Justin a screenshot.
+					</p>
+				`)}
+
+				${callout('💡', "If you're really stuck, text Justin. Tell him which page you're on (look at the URL in the browser bar) and what you tried.")}
 			`
 		},
-		{
-			id: 'unique',
-			icon: '🎨',
-			title: 'One-of-a-kind items',
-			subtitle: "When a 3-letter code isn't enough",
-			content: `
-				<p>For Leo Jaymez bodies (and any custom finish where "BLK" or "BST" doesn't capture
-				it), use the special code <span class="font-mono">UNQ</span> in the body-finish slot.</p>
-				<p>When you type UNQ in any attribute field, a description box appears below it.
-				Describe the finish in plain words — "Psychedelic blue/purple swirl with gold leaf accent."
-				That description shows on the item detail page next to the UNQ tag.</p>
-				<p>The photo carries the actual visual identification; the DB description gives a searchable
-				narrative.</p>
-			`
-		},
+
+		// ---------- Accessibility -----------------------------------
 		{
 			id: 'accessibility',
-			icon: '♿',
-			title: 'Font size & high contrast',
-			subtitle: 'Making the app easier to read',
+			icon: '🔍',
+			title: 'Making text bigger',
+			subtitle: 'Font size and high contrast',
 			content: `
-				<p>From <a href="/settings" class="text-[color:var(--color-gold-bright)] hover:underline">Settings</a>,
-				you can change:</p>
-				<ul>
-					<li><strong>Font size</strong> — Normal (100%), Large (120%), Extra large (140%).
-					Scales everything proportionally.</li>
-					<li><strong>High contrast mode</strong> — Brighter text and sharper colour separation
-					for daylight or dust-heavy environments.</li>
-				</ul>
-				<p>Both settings sync across whichever devices you sign in on, since they're stored
-				server-side rather than per-browser.</p>
+				<p>If the app feels small to read, or you're working in bright daylight, two settings
+					help:</p>
+
+				${steps([
+					`Top right of the bar: click <strong>Settings</strong>.`,
+					`At the top: <strong>Accessibility</strong> section.`,
+					`<strong>Font size</strong> — pick Normal (100%), Large (120%), or Extra large (140%). Scales everything in the app.`,
+					`<strong>High contrast mode</strong> — turn this on to brighten the text and sharpen the colors. Easier to read in daylight or when there's dust on the screen.`
+				])}
+
+				${callout('💡', "These settings save automatically and follow you across devices — so if you turn them on on your phone, they're on at your desktop too.")}
+
+				${tryItLink('/settings', 'open Settings')}
 			`
 		},
+
+		// ---------- The long code (SKU) -----------------------------
+		{
+			id: 'sku-meaning',
+			icon: '🔤',
+			title: 'What the long code on each item means',
+			subtitle: 'Decoding an SKU, piece by piece',
+			content: `
+				<p>You'll see codes like this on every item:</p>
+				<div style="text-align: center; margin: 16px 0;">
+					<span style="font-family: monospace; font-size: 16px; color: var(--color-gold); background: var(--color-input); padding: 8px 16px; border-radius: 4px; border: 1px solid var(--color-line-dim);">PU-SEY-JBJ-U-26-0017-HUM-NEK-SEY-MED-PAS</span>
+				</div>
+				<p>That's an SKU. It's the item's permanent ID. It might look scary, but it's actually
+					just a recipe — each part says something specific.</p>
+
+				<p style="margin-top: 18px;"><strong>Let's read it left to right:</strong></p>
+				<ul style="line-height: 2;">
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">PU</strong> = Pickup (category)</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">SEY</strong> = Seymour Duncan (brand)</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">JBJ</strong> = JB Jr (model)</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">U</strong> = Used (condition)</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">26</strong> = Received in 2026</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">0017</strong> = The 17th pickup received this year</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">HUM</strong> = Humbucker type</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">NEK</strong> = Neck position</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">SEY</strong> = Seymour Duncan brand (attribute slot)</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">MED</strong> = Medium output</li>
+					<li><strong style="color: var(--color-gold-bright); font-family: monospace;">PAS</strong> = Passive</li>
+				</ul>
+
+				${callout('💡', "You don't have to memorize this. The app shows the friendly version everywhere — 'Used Seymour Duncan JB Jr, Humbucker'. The code is just for the label and for the URL.")}
+
+				<p style="margin-top: 18px;"><strong>Two special codes show up sometimes:</strong></p>
+				<ul>
+					<li><span style="font-family: monospace; color: var(--color-ink);">XXX</span> = "no value" — the slot doesn't apply to this item</li>
+					<li><span style="font-family: monospace; color: var(--color-gold-bright);">UNQ</span> = "one of a kind" — see the description on the item page for what it really is</li>
+				</ul>
+			`
+		},
+
+		// ---------- Squarespace style guide (auto) ------------------
 		{
 			id: 'squarespace-style',
 			icon: '✍️',
-			title: 'Squarespace style guide',
-			subtitle: 'How titles and descriptions should read on the shop',
+			title: 'Website style reference',
+			subtitle: "How titles and descriptions should read on the shop",
 			content: styleGuideContent
 		}
 	];
 
 	let activeId = $state<string>(SECTIONS[0].id);
 	let activeSection = $derived(SECTIONS.find((s) => s.id === activeId) ?? SECTIONS[0]);
+
+	// Cross-section anchors — clicking <a href="#cheat-sheet"> inside
+	// any section should switch to that section, not scroll within the
+	// page. Handle clicks at the article level.
+	function handleArticleClick(e: MouseEvent) {
+		const target = e.target;
+		if (!(target instanceof HTMLAnchorElement)) return;
+		const href = target.getAttribute('href');
+		if (!href || !href.startsWith('#')) return;
+		const id = href.slice(1);
+		if (SECTIONS.find((s) => s.id === id)) {
+			e.preventDefault();
+			activeId = id;
+			// Scroll the article content back to the top for the new section.
+			const article = e.currentTarget as HTMLElement;
+			article.scrollTop = 0;
+		}
+	}
 </script>
 
 <section class="space-y-6">
@@ -319,12 +865,11 @@
 		<p class="eyebrow">Reference</p>
 		<h1 class="headline text-3xl">Help</h1>
 		<p class="text-sm text-[color:var(--color-ink-3)]">
-			How to use this app, what each concept means, and how to recover when something looks
-			weird.
+			How this all works, in plain English. Click a topic on the left.
 		</p>
 	</header>
 
-	<div class="grid gap-6 lg:grid-cols-[260px_1fr]">
+	<div class="grid gap-6 lg:grid-cols-[280px_1fr]">
 		<!-- TOC -->
 		<aside class="panel space-y-1 px-3 py-3">
 			{#each SECTIONS as section (section.id)}
@@ -348,7 +893,11 @@
 		</aside>
 
 		<!-- Content -->
-		<article class="panel space-y-4 px-6 py-5">
+		<article
+			class="panel space-y-4 px-6 py-5"
+			onclick={handleArticleClick}
+			role="presentation"
+		>
 			<header class="space-y-1 border-b border-[color:var(--color-line-dim)] pb-3">
 				<p class="eyebrow">{activeSection.icon} {activeSection.subtitle}</p>
 				<h2 class="headline text-2xl">{activeSection.title}</h2>
