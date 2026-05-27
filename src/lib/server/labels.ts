@@ -132,9 +132,12 @@ export async function buildLabelsPdf(
 	const sansFont = await doc.embedFont(StandardFonts.Helvetica);
 	const sansBold = await doc.embedFont(StandardFonts.HelveticaBold);
 	const italic = await doc.embedFont(StandardFonts.HelveticaOblique);
-	// TimesBoldItalic stands in for Cambria-BoldItalic (which lives on
-	// Windows but isn't a PDF standard font). Used only for the "SA"
-	// monogram drawn in the corner of every label.
+	// Times Italic (non-bold) for the SA monogram — lighter and more
+	// elegant than TimesBoldItalic, with the classical proportions
+	// Dad's looking for. TimesBoldItalic stays embedded as a fallback
+	// for very small label sizes where the lighter weight wouldn't
+	// hold up to thermal printing.
+	const timesItalic = await doc.embedFont(StandardFonts.TimesRomanItalic);
 	const timesItalicBold = await doc.embedFont(StandardFonts.TimesRomanBoldItalic);
 
 	const fonts: LabelFonts = {
@@ -143,6 +146,7 @@ export async function buildLabelsPdf(
 		sansFont,
 		sansBold,
 		italic,
+		timesItalic,
 		timesItalicBold
 	};
 
@@ -162,7 +166,8 @@ interface LabelFonts {
 	sansFont: PDFFont;
 	sansBold: PDFFont;
 	italic: PDFFont;
-	timesItalicBold: PDFFont; // for the "SA" monogram
+	timesItalic: PDFFont;     // primary SA monogram font (lighter/elegant)
+	timesItalicBold: PDFFont; // fallback for very small label sizes
 }
 
 // --- Brand palette for the SA monogram --------------------------------
@@ -198,21 +203,24 @@ function drawSaIcon(
 ): void {
 	const ink = rgb(0.05, 0.05, 0.05);
 
-	// Italic at every size that has room — the script feel is the
-	// whole point. Only drop to upright bold on truly tiny labels
-	// where the italic A's diagonal blurs to a triangle.
-	const useItalic = size >= 18;
-	const font = useItalic ? fonts.timesItalicBold : fonts.sansBold;
-	// Letters fill most of the logical (invisible) box — without
-	// framing to sit inside, they want to feel substantial.
-	const fontSizePt = useItalic ? size * 0.85 : size * 0.9;
+	// Three weight tiers based on physical size:
+	//   - ≥22pt: Times Italic (regular weight) — most elegant for big
+	//     LX-610 labels; the lighter stroke contrast reads as script.
+	//   - 14–22pt: Times Bold Italic — Times Italic disappears at this
+	//     size on color labels, so we go heavier.
+	//   - <14pt: Helvetica Bold upright — the italic A's diagonal
+	//     blurs to a triangle on tiny labels.
+	const font =
+		size >= 22 ? fonts.timesItalic : size >= 14 ? fonts.timesItalicBold : fonts.sansBold;
+	const fontSizePt =
+		size >= 22 ? size * 0.95 : size >= 14 ? size * 0.85 : size * 0.9;
 
-	// Letters drawn separately so the A overlaps the S at ~15% of
-	// the S's width. Gives the monogram a script ligature feel
-	// without needing an actual ligature glyph in the font.
+	// Letters drawn separately so the A tucks under the S's tail —
+	// gentle overlap (8%) makes them feel like a ligature without
+	// colliding. Bumped down from 15% which read as cramped.
 	const sWidth = font.widthOfTextAtSize('S', fontSizePt);
 	const aWidth = font.widthOfTextAtSize('A', fontSizePt);
-	const overlap = sWidth * 0.15;
+	const overlap = sWidth * 0.08;
 	const monogramWidth = sWidth + aWidth - overlap;
 	const startX = x + (size - monogramWidth) / 2;
 	// Optical centering: cap-height ≈ 0.7 of font size; baseline lands
@@ -314,11 +322,11 @@ async function renderLabel(
 		4,
 		Math.min(heightMm * (small ? 0.28 : 0.36), small ? 5 : 13)
 	);
-	// Right-edge inset is bigger than the generic padMm so the letters
-	// sit safely inside the printable area: ~2.5mm on small labels,
-	// ~5mm on large. Tunable knob if Dad's printer trims more than
-	// expected.
-	const iconRightInsetMm = small ? padMm + 1 : padMm + 2.5;
+	// Right-edge inset — bigger than generic padMm so the letters sit
+	// safely inside the printable area. Bumped another ~3.5mm (≈10pt)
+	// after Dad reported the SA still kissing the right edge on the
+	// Primera. ~6mm on small labels, ~8.5mm on large.
+	const iconRightInsetMm = small ? padMm + 4.5 : padMm + 6;
 	const iconX = (widthMm - iconRightInsetMm - iconSizeMm) * MM;
 	const iconY = (heightMm - padMm - iconSizeMm) * MM;
 	drawSaIcon(page, iconX, iconY, iconSizeMm * MM, fonts);
