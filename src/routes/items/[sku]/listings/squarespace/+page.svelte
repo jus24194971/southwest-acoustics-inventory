@@ -138,27 +138,48 @@
 	// Initial values for the inputs — start from the listing if there is
 	// one, fall back to the item. Captured once on mount via untrack so
 	// the user's edits stay put even if data refetches.
-	const initial = untrack(() => ({
-		title: data.listing?.listing_title ?? data.item.title,
-		description: data.listing?.listing_description_html ?? data.item.description_html ?? '',
-		urlSlug: data.listing?.listing_url_slug ?? '',
-		tags: tagsFromJson(data.listing?.listing_tags_json ?? null),
-		price:
-			data.listing?.listing_price_cents != null
-				? (data.listing.listing_price_cents / 100).toFixed(2)
-				: data.item.price_cents != null
-					? (data.item.price_cents / 100).toFixed(2)
-					: '',
-		visible: data.listing ? data.listing.listing_visible === 1 : true,
-		storefrontId: data.listing?.storefront_id ?? '',
-		categories: tagsFromJson(data.listing?.listing_categories_json ?? null)
+	// Fresh listing? = no saved categories yet. We pre-check the
+	// suggestions returned by the load() function so the user
+	// doesn't have to manually file every new listing into a sub-shop.
+	// Once they save (even with all the defaults), the same suggestions
+	// get *learned* — future items of the same kind suggest them with
+	// higher confidence.
+	const isFreshListing = !data.listing?.listing_categories_json;
+
+	const initial = untrack(() => {
+		const savedCategories = tagsFromJson(data.listing?.listing_categories_json ?? null)
 			.split(',')
 			.map((s) => s.trim())
-			.filter(Boolean),
-		freeShipping: data.listing ? data.listing.listing_free_shipping === 1 : false,
-		weightOz:
-			data.listing?.listing_weight_oz != null ? String(data.listing.listing_weight_oz) : ''
-	}));
+			.filter(Boolean);
+		// On a fresh listing, lean on the suggestion engine; otherwise
+		// honor whatever the user picked previously.
+		const startingCategories = isFreshListing
+			? data.autoCheckedSlugs
+			: savedCategories;
+		// Free shipping: same logic — default from suggestions on fresh
+		// listings, respect saved value on existing ones.
+		const startingFreeShipping = isFreshListing
+			? data.freeShippingSuggestion.suggested
+			: data.listing!.listing_free_shipping === 1;
+		return {
+			title: data.listing?.listing_title ?? data.item.title,
+			description: data.listing?.listing_description_html ?? data.item.description_html ?? '',
+			urlSlug: data.listing?.listing_url_slug ?? '',
+			tags: tagsFromJson(data.listing?.listing_tags_json ?? null),
+			price:
+				data.listing?.listing_price_cents != null
+					? (data.listing.listing_price_cents / 100).toFixed(2)
+					: data.item.price_cents != null
+						? (data.item.price_cents / 100).toFixed(2)
+						: '',
+			visible: data.listing ? data.listing.listing_visible === 1 : true,
+			storefrontId: data.listing?.storefront_id ?? '',
+			categories: startingCategories,
+			freeShipping: startingFreeShipping,
+			weightOz:
+				data.listing?.listing_weight_oz != null ? String(data.listing.listing_weight_oz) : ''
+		};
+	});
 
 	// Bindable category state — a Set of slugs that's checked in the
 	// multi-select. Reactive so the checkbox list reflects the picked
@@ -166,11 +187,21 @@
 	let selectedCategories = $state(new Set<string>(initial.categories));
 	let freeShipping = $state(initial.freeShipping);
 
+	// Set of slugs the suggestion engine marked as auto-suggested —
+	// used to render the ✨ indicator in the UI regardless of whether
+	// they're actually checked.
+	let suggestedSet = $derived(new Set(data.autoCheckedSlugs));
+
 	function toggleCategory(slug: string) {
 		if (selectedCategories.has(slug)) selectedCategories.delete(slug);
 		else selectedCategories.add(slug);
 		// Trigger reactivity — Svelte 5 doesn't reactively track Set
 		// mutations. Reassign a new Set so derived UI updates.
+		selectedCategories = new Set(selectedCategories);
+	}
+
+	function applyAllSuggestions() {
+		for (const slug of data.autoCheckedSlugs) selectedCategories.add(slug);
 		selectedCategories = new Set(selectedCategories);
 	}
 
@@ -362,9 +393,43 @@
 			the product's tag list on push so it shows up under the right
 			sub-shop URL. Each chosen category is one form value with
 			name="listing_category" — getAll() reads them on the server.
+
+			Suggestions are pre-checked on fresh listings via the
+			data.autoCheckedSlugs prop. The ✨ glyph on each checkbox
+			label shows which slugs the engine flagged for this item —
+			useful even after the user manually adjusts the selection.
 		-->
 		<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
 			<legend class="eyebrow px-2">Storefront categories</legend>
+
+			{#if data.autoCheckedSlugs.length > 0}
+				<div
+					class="rounded border border-[color:var(--color-gold-dim)] bg-[color:var(--color-input)] px-3 py-2 text-[11px]"
+				>
+					<div class="flex items-baseline justify-between gap-2">
+						<p class="text-[color:var(--color-gold-bright)]">
+							✨ Suggested for this item — {data.autoCheckedSlugs.length}
+							sub-shop{data.autoCheckedSlugs.length === 1 ? '' : 's'} based on category{data.suggestions.some(
+								(s) => s.reasons.some((r) => r.startsWith('Learned'))
+							)
+								? ', past picks'
+								: ''}{data.suggestions.some((s) =>
+								s.reasons.some((r) => r.includes('Title'))
+							)
+								? ', title'
+								: ''}.
+						</p>
+						<button
+							type="button"
+							class="text-[color:var(--color-gold-bright)] hover:underline"
+							onclick={applyAllSuggestions}
+						>
+							Apply all
+						</button>
+					</div>
+				</div>
+			{/if}
+
 			<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
 				Pick every sub-shop this listing should appear on. The slugs get appended to the
 				product's Squarespace tags so the storefront filtering routes them correctly.
@@ -379,7 +444,13 @@
 					</p>
 					<div class="grid gap-1.5 sm:grid-cols-2">
 						{#each SQUARESPACE_CATEGORIES.filter((c) => c.group === group) as cat (cat.slug)}
-							<label class="flex items-start gap-2 text-xs">
+							{@const suggestion = data.suggestions.find((s) => s.slug === cat.slug)}
+							<label
+								class="flex items-start gap-2 text-xs"
+								title={suggestion && suggestion.reasons.length > 0
+									? 'Suggested because: ' + suggestion.reasons.join('; ')
+									: undefined}
+							>
 								<input
 									type="checkbox"
 									name="listing_category"
@@ -394,6 +465,12 @@
 									<span class="ml-1 font-mono text-[10px] text-[color:var(--color-ink-4)]"
 										>{cat.slug}</span
 									>
+									{#if suggestedSet.has(cat.slug)}
+										<span
+											class="ml-1 text-[10px] text-[color:var(--color-gold-bright)]"
+											title="Auto-suggested by the engine">✨</span
+										>
+									{/if}
 								</span>
 							</label>
 						{/each}

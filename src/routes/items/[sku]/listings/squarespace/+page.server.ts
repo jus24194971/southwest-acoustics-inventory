@@ -15,6 +15,13 @@ import {
 	SquarespaceError,
 	type SquarespaceProductWritePayload
 } from '$lib/server/squarespace';
+import {
+	suggestCategoriesForItem,
+	recordCategoryUsage,
+	suggestFreeShipping,
+	AUTO_CHECK_SCORE,
+	type CategorySuggestion
+} from '$lib/server/category_suggestions';
 
 /**
  * /items/[sku]/listings/squarespace — Squarespace listing editor.
@@ -44,23 +51,61 @@ interface ItemRow {
 	price_cents: number | null;
 	stock_qty: number;
 	tracking_mode: 'serialized' | 'stocked';
+	condition: string;
+	model: string | null;
+	cat_code: string;
+	brand_code: string | null;
 }
 
 export const load: PageServerLoad = async (event) => {
 	const db = getDB(event);
 	const sku = event.params.sku;
 
+	// Pull the extra fields the suggestion engine needs (condition,
+	// model, internal category code, brand code) so suggestions are
+	// computable without a second query.
 	const item = await db
 		.prepare(
-			`SELECT id, sku, title, description, description_html, price_cents,
-			        stock_qty, tracking_mode
-			 FROM item WHERE sku = ? AND deleted_at IS NULL`
+			`SELECT i.id, i.sku, i.title, i.description, i.description_html,
+			        i.price_cents, i.stock_qty, i.tracking_mode, i.condition, i.model,
+			        c.code AS cat_code, b.code AS brand_code
+			 FROM item i
+			 JOIN category c ON c.id = i.category_id
+			 LEFT JOIN brand b ON b.id = i.brand_id
+			 WHERE i.sku = ? AND i.deleted_at IS NULL`
 		)
 		.bind(sku)
 		.first<ItemRow>();
 	if (!item) throw error(404, `No item with SKU ${sku}`);
 
 	const listing = await loadListing(db, item.id, 'squarespace');
+
+	// Compute suggestions for this item. Always returned — the page
+	// uses them as defaults when the listing has no manual categories
+	// yet, and surfaces them as "✨" hints when the user has already
+	// picked their own set.
+	const suggestions: CategorySuggestion[] = await suggestCategoriesForItem(db, {
+		cat_code: item.cat_code,
+		brand_code: item.brand_code,
+		model: item.model,
+		condition: item.condition,
+		tracking_mode: item.tracking_mode,
+		stock_qty: item.stock_qty,
+		title: item.title
+	});
+	const autoCheckedSlugs = suggestions
+		.filter((s) => s.score >= AUTO_CHECK_SCORE)
+		.map((s) => s.slug);
+
+	const freeShippingSuggestion = suggestFreeShipping({
+		cat_code: item.cat_code,
+		brand_code: item.brand_code,
+		model: item.model,
+		condition: item.condition,
+		tracking_mode: item.tracking_mode,
+		stock_qty: item.stock_qty,
+		title: item.title
+	});
 
 	// Try to fetch Squarespace storefronts so the picker is populated.
 	// We swallow errors — if the API key isn't there or SS is down,
@@ -84,7 +129,11 @@ export const load: PageServerLoad = async (event) => {
 		storefronts,
 		storefrontsError,
 		hasApiKey: !!apiKey,
-		hasAiKey: !!event.platform?.env?.ANTHROPIC_API_KEY
+		hasAiKey: !!event.platform?.env?.ANTHROPIC_API_KEY,
+		// Suggestion-engine output for the categories multi-select.
+		suggestions,
+		autoCheckedSlugs,
+		freeShippingSuggestion
 	};
 };
 
@@ -157,6 +206,38 @@ function buildEffectiveTags(
 	return Array.from(new Set(all.filter((t) => t.length > 0)));
 }
 
+/**
+ * Pull the item's internal category code + condition (the keys the
+ * learning table uses) and record each picked SS category against
+ * them. Called from save() and push() — every confirmed selection
+ * sharpens the suggestion engine for future items of the same type.
+ *
+ * Best-effort: a learning failure shouldn't block the listing save.
+ */
+async function recordCategoryUsageForItem(
+	db: import('@cloudflare/workers-types').D1Database,
+	itemId: number,
+	pickedCategorySlugs: string[]
+): Promise<void> {
+	if (pickedCategorySlugs.length === 0) return;
+	try {
+		const row = await db
+			.prepare(
+				`SELECT c.code AS cat_code, i.condition
+				 FROM item i JOIN category c ON c.id = i.category_id
+				 WHERE i.id = ?`
+			)
+			.bind(itemId)
+			.first<{ cat_code: string; condition: string }>();
+		if (!row) return;
+		for (const slug of pickedCategorySlugs) {
+			await recordCategoryUsage(db, row.cat_code, row.condition, slug);
+		}
+	} catch (err) {
+		console.error('recordCategoryUsageForItem failed (non-fatal):', err);
+	}
+}
+
 export const actions: Actions = {
 	save: async (event) => {
 		const db = getDB(event);
@@ -185,6 +266,11 @@ export const actions: Actions = {
 			listing_weight_oz: parsed.weightOz
 		});
 
+		// Feed the suggestion learning loop — every category Dad
+		// confirms by saving gets a count bump for this item's
+		// (internal category, condition) tuple.
+		await recordCategoryUsageForItem(db, item.id, parsed.categories);
+
 		throw redirect(303, `/items/${event.params.sku}/listings/squarespace?saved=1`);
 	},
 
@@ -206,6 +292,10 @@ export const actions: Actions = {
 		const form = await event.request.formData();
 		const parsed = parseFormData(form);
 		const existing = await loadListing(db, item.id, 'squarespace');
+
+		// Push is the strongest "I really mean it" signal — also feed
+		// the learning loop with the picked categories.
+		await recordCategoryUsageForItem(db, item.id, parsed.categories);
 
 		// Persist the form first so the local copy reflects what we tried
 		// to push, even if the push itself fails. Status stays 'ready'
