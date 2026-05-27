@@ -59,8 +59,11 @@ export const load: PageServerLoad = async (event) => {
 		// Search across SKU, title, description, model, plus brand name
 		// via the joined brand table. Wrap each LIKE in lower() so the
 		// match is case-insensitive without forcing a fancy collation.
+		// NOTE: alias `b` matches the LEFT JOIN below — not `br`. SQLite
+		// throws "no such column: br.name" otherwise (a previous version
+		// used `br` here and bricked the global search).
 		wheres.push(
-			`(LOWER(i.sku) LIKE ? OR LOWER(i.title) LIKE ? OR LOWER(COALESCE(i.description,'')) LIKE ? OR LOWER(COALESCE(i.model,'')) LIKE ? OR LOWER(COALESCE(br.name,'')) LIKE ?)`
+			`(LOWER(i.sku) LIKE ? OR LOWER(i.title) LIKE ? OR LOWER(COALESCE(i.description,'')) LIKE ? OR LOWER(COALESCE(i.model,'')) LIKE ? OR LOWER(COALESCE(b.name,'')) LIKE ?)`
 		);
 		const needle = `%${q.toLowerCase()}%`;
 		binds.push(needle, needle, needle, needle, needle);
