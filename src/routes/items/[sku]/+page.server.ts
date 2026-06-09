@@ -529,6 +529,138 @@ export const actions: Actions = {
 		throw redirect(303, `/items/${finalSku}${editQs ? `?${editQs}` : ''}`);
 	},
 
+	// Clone an item — create a brand-new, STANDALONE item that copies the
+	// source's metadata (title, description, category, brand, model,
+	// condition, price/cost, attributes) plus its photos, then land on the
+	// new item with the edit form open so Dad can change the variation
+	// (colour, style, qty…). The clone starts UNLISTED (sellable 0, no
+	// marketplace rows) with its own fresh SKU + stock; his next attribute
+	// edit re-encodes the SKU to match the variation.
+	cloneItem: async (event) => {
+		const db = getDB(event);
+		const source = await loadItemBySku(db, event.params.sku);
+		if (!source) throw error(404);
+
+		// Fresh SKU: same category/brand/model/year, copying the source's
+		// attributes for now. Burns a new sequence number — it's a distinct item.
+		const newSku = await generateSku(db, {
+			categoryCode: source.cat_code,
+			brandCode: source.brand_code ?? 'XXX',
+			modelCode: source.model ?? 'XXX',
+			condition: source.condition as Condition,
+			yearReceived: source.year_received,
+			attr1: source.attr_1,
+			attr2: source.attr_2,
+			attr3: source.attr_3,
+			attr4: source.attr_4,
+			attr5: source.attr_5
+		});
+
+		// Insert the clone — stock_qty 1, sellable 0 (unlisted), no parent.
+		const inserted = await db
+			.prepare(
+				`INSERT INTO item (
+					sku, title, description, description_html,
+					category_id, brand_id, model, condition,
+					year_received, cost_cents, price_cents, current_bin_id,
+					tracking_mode, stock_qty, sellable,
+					attr_1, attr_2, attr_3, attr_4, attr_5,
+					attr_1_unique_desc, attr_2_unique_desc, attr_3_unique_desc,
+					attr_4_unique_desc, attr_5_unique_desc
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				RETURNING id`
+			)
+			.bind(
+				newSku,
+				source.title,
+				source.description,
+				source.description_html,
+				source.category_id,
+				source.brand_id,
+				source.model,
+				source.condition,
+				source.year_received,
+				source.cost_cents,
+				source.price_cents,
+				source.current_bin_id,
+				source.tracking_mode,
+				source.attr_1,
+				source.attr_2,
+				source.attr_3,
+				source.attr_4,
+				source.attr_5,
+				source.attr_1_unique_desc,
+				source.attr_2_unique_desc,
+				source.attr_3_unique_desc,
+				source.attr_4_unique_desc,
+				source.attr_5_unique_desc
+			)
+			.first<{ id: number }>();
+		if (!inserted) throw error(500, 'cloneItem: INSERT returned no row');
+		const newId = inserted.id;
+
+		const actor = event.locals?.userEmail ?? 'system';
+		await db
+			.prepare(`INSERT INTO movement (item_id, kind, note, actor) VALUES (?, 'receive', ?, ?)`)
+			.bind(newId, `Cloned from ${source.sku}`, actor)
+			.run();
+
+		// Copy photos R2-side, capped to stay within the free-plan
+		// 50-subrequest budget (each photo is a get + a put). 15 seeds a
+		// variation comfortably; the rest can be added or pulled later.
+		const CLONE_PHOTO_CAP = 15;
+		let photosCopied = 0;
+		let photosTotal = 0;
+		const r2 = event.platform?.env?.PHOTOS;
+		if (r2) {
+			const { results: srcPhotos } = await db
+				.prepare(
+					`SELECT r2_key, position, alt_text, bytes, content_type
+					 FROM item_photo WHERE item_id = ? AND deleted_at IS NULL
+					 ORDER BY position, id`
+				)
+				.bind(source.id)
+				.all<{
+					r2_key: string;
+					position: number;
+					alt_text: string | null;
+					bytes: number | null;
+					content_type: string | null;
+				}>();
+			photosTotal = srcPhotos.length;
+			const copied: Array<{ key: string; ph: (typeof srcPhotos)[number] }> = [];
+			for (const ph of srcPhotos.slice(0, CLONE_PHOTO_CAP)) {
+				const obj = await r2.get(ph.r2_key);
+				if (!obj) continue;
+				const ext = ph.r2_key.split('.').pop() || 'jpg';
+				const newKey = `items/${newId}/${crypto.randomUUID()}.${ext}`;
+				await r2.put(
+					newKey,
+					await obj.arrayBuffer(),
+					ph.content_type ? { httpMetadata: { contentType: ph.content_type } } : {}
+				);
+				copied.push({ key: newKey, ph });
+			}
+			photosCopied = copied.length;
+			if (copied.length > 0) {
+				await db.batch(
+					copied.map(({ key, ph }) =>
+						db
+							.prepare(
+								`INSERT INTO item_photo (item_id, r2_key, position, alt_text, bytes, content_type)
+								 VALUES (?, ?, ?, ?, ?, ?)`
+							)
+							.bind(newId, key, ph.position, ph.alt_text, ph.bytes, ph.content_type)
+					)
+				);
+			}
+		}
+
+		const qs = new URLSearchParams({ cloned: '1', from: source.sku });
+		if (photosTotal > photosCopied) qs.set('photo_note', `${photosCopied} of ${photosTotal}`);
+		throw redirect(303, `/items/${encodeURIComponent(newSku)}?${qs.toString()}`);
+	},
+
 	// (Category changes are folded into the `edit` action above so the
 	// new category's attribute values can be picked at the same time and
 	// the SKU can regenerate cleanly. The old standalone changeCategory

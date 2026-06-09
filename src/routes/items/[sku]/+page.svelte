@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
+	import { afterNavigate } from '$app/navigation';
 	import type { PageData, ActionData } from './$types';
 	import AttributeValueSelect from '$lib/components/AttributeValueSelect.svelte';
 	import InfoTip from '$lib/components/InfoTip.svelte';
@@ -21,6 +22,14 @@
 			data.templates[0]?.code ??
 			'LW_DURABLE_19x64'
 	);
+
+	// After a clone we redirect to the new item with ?cloned=1 — open the
+	// edit form so Dad can change the variation (colour, style, qty…) right
+	// away. afterNavigate, not a $state initializer, because this route
+	// reuses its component instance across item→item navigations.
+	afterNavigate(() => {
+		if (page.url.searchParams.get('cloned') === '1') editingDetails = true;
+	});
 
 	const CONDITION_LABEL: Record<string, string> = {
 		N: 'New',
@@ -207,6 +216,18 @@
 		const sp = page.url.searchParams;
 		const ss = sp.get('ss_sync');
 		const msg = sp.get('ss_msg');
+		if (sp.get('cloned')) {
+			const from = sp.get('from');
+			const pn = sp.get('photo_note');
+			return {
+				tone: 'good',
+				text:
+					`Cloned${from ? ` from ${from}` : ''} — this is a brand-new item. ` +
+					`Change the attributes that differ (colour, style, title, quantity) below and Save; ` +
+					`the SKU updates to match automatically.` +
+					(pn ? ` (Copied ${pn} photos — add or pull the rest if you need them.)` : '')
+			};
+		}
 		if (sp.get('adjusted')) {
 			if (ss === 'ok')
 				return { tone: 'good', text: 'Quantity updated — new stock synced to Squarespace.' };
@@ -363,6 +384,15 @@
 				Received {data.item.year_received}
 			</span>
 			<div class="ml-auto flex items-center gap-1.5">
+				<form method="POST" action="?/cloneItem" class="contents">
+					<button
+						type="submit"
+						class="btn-ghost px-3 py-1 text-xs"
+						title="Create a new item from this one — copies its details and photos, then opens it so you can change the variation (colour, style, etc.)"
+					>
+						⧉ Clone item
+					</button>
+				</form>
 				<label for="label_tpl" class="sr-only">Label size / printer</label>
 				<select
 					id="label_tpl"
