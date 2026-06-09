@@ -117,3 +117,27 @@ export async function generateSku(db: D1Database, parts: SkuParts): Promise<stri
 
 	return `${parts.categoryCode}-${brand}-${model}-${parts.condition}-${yy}-${seqStr}-${a1}-${a2}-${a3}-${a4}-${a5}`;
 }
+
+/**
+ * Re-encode a SKU in place after an attribute or condition edit that did NOT
+ * change the category. Keeps CAT / BRAND / MODEL / YY / SEQ exactly as they
+ * are — no new sequence number is burned, so the item keeps its identity —
+ * and swaps only the condition segment and the five attribute segments
+ * (e.g. a knob-colour correction: …-0008-KNB-BLK-… → …-0008-KNB-GLD-…).
+ *
+ * Returns null if `existingSku` isn't the canonical 11-segment shape, so the
+ * caller can fall back to leaving the SKU untouched.
+ */
+export function reskuInPlace(
+	existingSku: string,
+	condition: Condition,
+	attrs: ReadonlyArray<string | null | undefined>
+): string | null {
+	const seg = existingSku.split('-');
+	if (seg.length !== 11) return null;
+	seg[3] = condition;
+	for (let i = 0; i < 5; i++) {
+		seg[6 + i] = normaliseAttr(attrs[i]);
+	}
+	return seg.join('-');
+}

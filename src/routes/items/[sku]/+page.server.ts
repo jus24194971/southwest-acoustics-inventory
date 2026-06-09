@@ -2,7 +2,7 @@ import type { Actions, PageServerLoad } from './$types';
 import type { D1Database } from '@cloudflare/workers-types';
 import { error, fail, redirect } from '@sveltejs/kit';
 import { getDB } from '$lib/server/db';
-import { isCondition, normaliseAttr, ATTR_UNIQUE, generateSku, type Condition } from '$lib/server/sku';
+import { isCondition, normaliseAttr, ATTR_UNIQUE, generateSku, reskuInPlace, type Condition } from '$lib/server/sku';
 import { defaultSlug, type Platform } from '$lib/server/listings';
 import { autoSyncSquarespaceForItem, type SsAutoSyncOutcome } from '$lib/server/ss_auto_sync';
 import {
@@ -402,17 +402,26 @@ export const actions: Actions = {
 		}
 
 		const categoryChanged = newCategoryId !== item.category_id;
-		const shouldRegenSku = categoryChanged && !keepSku;
+		const conditionChanged = condition !== item.condition;
+		const attrsChanged = [item.attr_1, item.attr_2, item.attr_3, item.attr_4, item.attr_5].some(
+			(cur, i) => attrRaw[i].value !== cur
+		);
 
 		const costCents = costStr ? Math.round(parseFloat(costStr) * 100) : null;
 		const priceCents = priceStr ? Math.round(parseFloat(priceStr) * 100) : null;
 
-		// If the category changed and the user didn't tick "keep current
-		// SKU", allocate a fresh SKU under the new category's prefix +
-		// the just-picked attribute values. The old SKU is reflected in
-		// an 'adjust' movement so the audit trail explains the change.
+		// Keep the SKU in step with the fields it encodes:
+		//   - Category changed (and the user didn't tick "keep current SKU"):
+		//     allocate a fresh SKU under the new category's prefix + the
+		//     just-picked attributes. This burns a new sequence number.
+		//   - Same category, but condition or an attribute changed: re-encode
+		//     IN PLACE — keep CAT/BRAND/MODEL/YY/SEQ, swap only the condition
+		//     and attribute segments. No new sequence, so the item keeps its
+		//     identity (e.g. a knob colour fix: KNB-BLK → KNB-GLD).
+		// Whichever path runs, the change is recorded in an 'adjust' movement.
 		let finalSku = item.sku;
-		if (shouldRegenSku) {
+		let skuChangeNote: string | null = null;
+		if (categoryChanged && !keepSku) {
 			finalSku = await generateSku(db, {
 				categoryCode: newCat.code,
 				brandCode: item.brand_code ?? 'XXX',
@@ -425,6 +434,21 @@ export const actions: Actions = {
 				attr4: attrRaw[3].value,
 				attr5: attrRaw[4].value
 			});
+			skuChangeNote = `Recategorized to ${newCat.code}; SKU changed from ${item.sku} to ${finalSku}`;
+		} else if (categoryChanged && keepSku) {
+			skuChangeNote = `Recategorized to ${newCat.code}; SKU kept as ${item.sku}`;
+		} else if (!keepSku && (conditionChanged || attrsChanged)) {
+			const rebuilt = reskuInPlace(item.sku, condition as Condition, [
+				attrRaw[0].value,
+				attrRaw[1].value,
+				attrRaw[2].value,
+				attrRaw[3].value,
+				attrRaw[4].value
+			]);
+			if (rebuilt && rebuilt !== item.sku) {
+				finalSku = rebuilt;
+				skuChangeNote = `Attributes/condition updated; SKU changed from ${item.sku} to ${finalSku}`;
+			}
 		}
 
 		const writes = [
@@ -465,31 +489,14 @@ export const actions: Actions = {
 					item.id
 				)
 		];
-		if (shouldRegenSku) {
+		if (skuChangeNote) {
 			writes.push(
 				db
 					.prepare(
 						`INSERT INTO movement (item_id, kind, note, actor)
 						 VALUES (?, 'adjust', ?, ?)`
 					)
-					.bind(
-						item.id,
-						`Recategorized to ${newCat.code}; SKU changed from ${item.sku} to ${finalSku}`,
-						event.locals?.userEmail ?? 'system'
-					)
-			);
-		} else if (categoryChanged) {
-			writes.push(
-				db
-					.prepare(
-						`INSERT INTO movement (item_id, kind, note, actor)
-						 VALUES (?, 'adjust', ?, ?)`
-					)
-					.bind(
-						item.id,
-						`Recategorized to ${newCat.code}; SKU kept as ${item.sku}`,
-						event.locals?.userEmail ?? 'system'
-					)
+					.bind(item.id, skuChangeNote, event.locals?.userEmail ?? 'system')
 			);
 		}
 		await db.batch(writes);
