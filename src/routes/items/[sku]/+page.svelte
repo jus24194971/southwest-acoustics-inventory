@@ -1297,43 +1297,6 @@
 		</aside>
 	</div>
 
-	<!-- ============= Attributes (view) ============= -->
-	{#if attrSlots.some((s) => s.label != null)}
-		<section class="panel space-y-3 px-6 py-5">
-			<p class="eyebrow">Attributes</p>
-			<dl class="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
-				{#each attrSlots as slot (slot.n)}
-					{#if slot.label}
-						<div class="space-y-0.5">
-							<dt class="eyebrow text-[10px]">{slot.label}</dt>
-							<dd>
-								{#if slot.value === 'XXX'}
-									<span class="font-mono text-sm italic text-[color:var(--color-ink-4)]">—</span>
-								{:else if slot.value === 'UNQ'}
-									<span class="font-mono text-sm text-[color:var(--color-gold-bright)]">
-										UNQ
-									</span>
-								{:else if slot.valueLabel}
-									<span class="text-sm text-[color:var(--color-ink)]">{slot.valueLabel}</span>
-									<span class="ml-1 font-mono text-xs text-[color:var(--color-gold-dim)]">
-										({slot.value})
-									</span>
-								{:else}
-									<span class="font-mono text-sm text-[color:var(--color-ink)]">{slot.value}</span>
-								{/if}
-							</dd>
-							{#if slot.value === 'UNQ' && slot.uniqueDesc}
-								<p class="text-xs italic text-[color:var(--color-ink-2)]">
-									{slot.uniqueDesc}
-								</p>
-							{/if}
-						</div>
-					{/if}
-				{/each}
-			</dl>
-		</section>
-	{/if}
-
 	<!-- ============= Variants (if this item has children) ============= -->
 	{#if data.variants.length > 0}
 		<section class="panel space-y-3 px-6 py-5">
@@ -1362,7 +1325,7 @@
 	<!-- ============= Description + edit ============= -->
 	<section class="panel space-y-3 px-6 py-5">
 		<div class="flex items-center justify-between">
-			<p class="eyebrow">Description</p>
+			<p class="eyebrow">Attributes &amp; Description</p>
 			{#if !editingDetails}
 				<button
 					type="button"
@@ -1373,6 +1336,39 @@
 				</button>
 			{/if}
 		</div>
+
+		<!-- Attributes (view) — sit above the description in the same box so a
+		     single Edit button governs both. The edit form below also covers
+		     attributes, so only show this read-only grid when not editing. -->
+		{#if !editingDetails && attrSlots.some((s) => s.label != null)}
+			<dl class="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+				{#each attrSlots as slot (slot.n)}
+					{#if slot.label}
+						<div class="space-y-0.5">
+							<dt class="eyebrow text-[10px]">{slot.label}</dt>
+							<dd>
+								{#if slot.value === 'XXX'}
+									<span class="font-mono text-sm italic text-[color:var(--color-ink-4)]">—</span>
+								{:else if slot.value === 'UNQ'}
+									<span class="font-mono text-sm text-[color:var(--color-gold-bright)]">UNQ</span>
+								{:else if slot.valueLabel}
+									<span class="text-sm text-[color:var(--color-ink)]">{slot.valueLabel}</span>
+									<span class="ml-1 font-mono text-xs text-[color:var(--color-gold-dim)]"
+										>({slot.value})</span
+									>
+								{:else}
+									<span class="font-mono text-sm text-[color:var(--color-ink)]">{slot.value}</span>
+								{/if}
+							</dd>
+							{#if slot.value === 'UNQ' && slot.uniqueDesc}
+								<p class="text-xs italic text-[color:var(--color-ink-2)]">{slot.uniqueDesc}</p>
+							{/if}
+						</div>
+					{/if}
+				{/each}
+			</dl>
+			<div class="border-t border-[color:var(--color-line-dim)]"></div>
+		{/if}
 
 		{#if editingDetails}
 			<form method="POST" action="?/edit" class="space-y-3">
