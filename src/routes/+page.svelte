@@ -195,7 +195,7 @@
 								class="absolute -left-2.5 mt-1.5 h-2.5 w-2.5 rounded-full ring-2 ring-[color:var(--color-panel)] {meta.dot}"
 							></span>
 
-							<div class="min-w-0 flex-1">
+							<div class="min-w-0 flex-1 pl-2">
 								<div class="flex items-baseline justify-between gap-2">
 									<span class="text-sm font-medium text-[color:var(--color-ink)]">
 										{meta.label}
