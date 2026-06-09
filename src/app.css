@@ -44,6 +44,10 @@
 	--font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
 	--font-sans: 'Inter Tight', system-ui, -apple-system, sans-serif;
 	--font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+	/* Shape — softer & roomier hybrid */
+	--radius-btn: 8px;
+	--radius-panel: 12px;
 }
 
 /* =============================================================
@@ -51,36 +55,32 @@
    ============================================================= */
 
 html {
-	background: #12100c;
+	background: #100e0a;
 }
 
 body {
 	font-family: var(--font-sans);
 	/* Warm radial vignette — same approach as Listing Studio so the two
-	   apps feel like one shop. */
-	background: radial-gradient(ellipse at top, #26211a 0%, #12100c 80%);
+	   apps feel like one shop, nudged a touch warmer at the top. */
+	background: radial-gradient(ellipse at top, #2a231b 0%, #13110c 78%);
 	color: var(--color-ink);
 	font-size: 14px;
-	line-height: 1.45;
+	line-height: 1.5;
 	min-height: 100vh;
 	-webkit-font-smoothing: antialiased;
 }
 
-/* Faint vertical scan-lines on the body — pure workshop vibe, almost
-   imperceptible but lifts the dead-flat dark background. */
+/* Faint material grain — the "tooth" of a lacquered walnut cabinet.
+   A fractal-noise SVG, kept whisper-quiet so it reads as a surface,
+   not as visible noise. Replaces the old scan-lines. */
 body::before {
 	content: '';
 	position: fixed;
 	inset: 0;
 	pointer-events: none;
 	z-index: 0;
-	background-image: repeating-linear-gradient(
-		91deg,
-		rgba(140, 110, 70, 0.018) 0px,
-		rgba(140, 110, 70, 0.018) 1px,
-		transparent 1px,
-		transparent 3px
-	);
+	opacity: 0.5;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.045'/%3E%3C/svg%3E");
 }
 
 /* Shop-floor reality: Dad uses gloved or dusty hands. 44px is the iOS HIG
@@ -95,102 +95,153 @@ textarea {
 }
 
 /* =============================================================
-   Reusable component classes — kept thin so most styling can live
-   inline as Tailwind utilities. Use these when a pattern recurs
-   enough that re-typing the utility chain hurts readability.
+   Reusable component classes. The buttons are "pressed-glass
+   cabochons": a domed specular highlight, a crisp bevel, and an
+   ambient shadow so they sit physically raised on the walnut —
+   like the controls on a vintage radio/amp. They lift on hover
+   and press down on click.
    ============================================================= */
 
 @layer components {
-	/* Primary call-to-action — molten-gold bar with inset highlight,
-	   like the brand on the Listing Studio toolbar. */
+	/* Primary CTA — brass-and-glass cabochon knob. */
 	.btn-primary {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		gap: 0.5rem;
-		padding: 0.625rem 1rem;
+		padding: 0.6rem 1.1rem;
 		font-family: var(--font-sans);
 		font-weight: 600;
 		font-size: 0.875rem;
-		color: #251a0a;
-		background: linear-gradient(
-			180deg,
-			var(--color-gold-bright) 0%,
-			var(--color-gold) 60%,
-			var(--color-gold-dim) 100%
-		);
+		color: #2a1d09;
 		border: 1px solid var(--color-gold-deep);
-		border-radius: 4px;
+		border-radius: var(--radius-btn);
+		background:
+			radial-gradient(
+				120% 95% at 30% -20%,
+				rgba(255, 255, 255, 0.6) 0%,
+				rgba(255, 255, 255, 0.12) 26%,
+				transparent 56%
+			),
+			linear-gradient(
+				180deg,
+				var(--color-gold-bright) 0%,
+				var(--color-gold) 52%,
+				var(--color-gold-dim) 100%
+			);
 		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.3),
-			inset 0 -1px 0 rgba(0, 0, 0, 0.2),
-			0 1px 2px rgba(0, 0, 0, 0.4);
+			inset 0 1px 0 rgba(255, 255, 255, 0.55),
+			inset 0 -2px 4px rgba(90, 60, 20, 0.4),
+			0 3px 7px rgba(0, 0, 0, 0.42),
+			0 1px 0 rgba(0, 0, 0, 0.3);
 		cursor: pointer;
-		transition: filter 0.12s ease;
 		text-decoration: none;
+		transition: transform 0.1s ease, box-shadow 0.12s ease, filter 0.12s ease;
 	}
 	.btn-primary:hover {
-		filter: brightness(1.08);
+		filter: brightness(1.06);
+		transform: translateY(-1px);
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.6),
+			inset 0 -2px 4px rgba(90, 60, 20, 0.4),
+			0 6px 14px rgba(0, 0, 0, 0.5),
+			0 1px 0 rgba(0, 0, 0, 0.3);
 	}
 	.btn-primary:active {
-		filter: brightness(0.95);
+		transform: translateY(1px);
+		filter: brightness(0.97);
+		box-shadow:
+			inset 0 2px 5px rgba(90, 60, 20, 0.5),
+			0 1px 2px rgba(0, 0, 0, 0.4);
 	}
 
-	/* Ghost button — outlined, used for secondary actions and Cancel. */
+	/* Ghost / secondary — clear-glass cabochon over the walnut. */
 	.btn-ghost {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		gap: 0.5rem;
-		padding: 0.625rem 1rem;
+		padding: 0.6rem 1.1rem;
 		font-family: var(--font-sans);
 		font-weight: 500;
 		font-size: 0.875rem;
 		color: var(--color-ink-2);
-		background: transparent;
 		border: 1px solid var(--color-line);
-		border-radius: 4px;
+		border-radius: var(--radius-btn);
+		background:
+			radial-gradient(120% 95% at 30% -20%, rgba(255, 240, 210, 0.12) 0%, transparent 56%),
+			linear-gradient(180deg, rgba(255, 240, 210, 0.06), rgba(0, 0, 0, 0.07));
+		box-shadow:
+			inset 0 1px 0 rgba(255, 240, 210, 0.12),
+			inset 0 -1px 0 rgba(0, 0, 0, 0.28),
+			0 2px 6px rgba(0, 0, 0, 0.32);
 		cursor: pointer;
-		transition: all 0.12s ease;
 		text-decoration: none;
+		transition: transform 0.1s ease, box-shadow 0.12s ease, border-color 0.12s ease,
+			color 0.12s ease, background 0.12s ease;
 	}
 	.btn-ghost:hover {
-		background: var(--color-hover);
-		border-color: var(--color-line-bright);
 		color: var(--color-ink);
-	}
-
-	/* Panel — the recurring card surface. Subtle inset highlight on top,
-	   shadow on bottom. */
-	.panel {
-		background: var(--color-panel);
-		border: 1px solid var(--color-line-dim);
-		border-radius: 6px;
+		border-color: var(--color-line-bright);
+		transform: translateY(-1px);
+		background:
+			radial-gradient(120% 95% at 30% -20%, rgba(255, 240, 210, 0.18) 0%, transparent 56%),
+			linear-gradient(180deg, rgba(255, 240, 210, 0.1), rgba(0, 0, 0, 0.05));
 		box-shadow:
-			inset 0 1px 0 rgba(255, 230, 180, 0.04),
-			0 4px 16px rgba(0, 0, 0, 0.25);
+			inset 0 1px 0 rgba(255, 240, 210, 0.16),
+			inset 0 -1px 0 rgba(0, 0, 0, 0.28),
+			0 5px 12px rgba(0, 0, 0, 0.42);
+	}
+	.btn-ghost:active {
+		transform: translateY(1px);
+		box-shadow:
+			inset 0 2px 5px rgba(0, 0, 0, 0.35),
+			0 1px 2px rgba(0, 0, 0, 0.3);
 	}
 
-	/* Form inputs — dark wells with gold focus ring. */
+	/* Panel — lacquered walnut: warm gradient, French-polish top sheen,
+	   soft ambient shadow. */
+	.panel {
+		border: 1px solid var(--color-line-dim);
+		border-radius: var(--radius-panel);
+		background:
+			linear-gradient(180deg, rgba(255, 235, 195, 0.05) 0%, transparent 7%),
+			linear-gradient(180deg, #322a20 0%, #271f17 60%, #221b14 100%);
+		box-shadow:
+			inset 0 1px 0 rgba(255, 230, 180, 0.06),
+			0 6px 22px rgba(0, 0, 0, 0.35);
+	}
+
+	/* Form inputs — recessed dark wells with a brass focus ring. */
 	.field {
 		display: block;
 		width: 100%;
-		padding: 0.625rem 0.75rem;
+		padding: 0.6rem 0.75rem;
 		font-family: var(--font-sans);
 		font-size: 0.875rem;
 		color: var(--color-ink);
 		background: var(--color-input);
 		border: 1px solid var(--color-line);
-		border-radius: 4px;
+		border-radius: var(--radius-btn);
+		box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
 		transition: border-color 0.15s ease, box-shadow 0.15s ease;
 	}
 	.field:focus {
 		outline: none;
 		border-color: var(--color-gold);
-		box-shadow: 0 0 0 3px rgba(178, 147, 91, 0.18);
+		box-shadow:
+			inset 0 1px 2px rgba(0, 0, 0, 0.4),
+			0 0 0 3px rgba(178, 147, 91, 0.22);
 	}
 	.field::placeholder {
 		color: var(--color-ink-4);
+	}
+
+	/* Search pill — the global search well, fully rounded with room for
+	   a leading magnifier icon. */
+	.field-search {
+		border-radius: 999px;
+		padding-left: 2.1rem;
 	}
 
 	/* Section headlines — italic Fraunces, the brand voice. */
@@ -211,12 +262,13 @@ textarea {
 		color: var(--color-ink-3);
 	}
 
-	/* Status pills — muted backgrounds with category accents. */
+	/* Status pills — muted backgrounds with category accents + a faint
+	   glass highlight. */
 	.pill {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.25rem;
-		padding: 0.125rem 0.5rem;
+		padding: 0.18rem 0.55rem;
 		font-family: var(--font-mono);
 		font-size: 0.6875rem;
 		letter-spacing: 0.08em;
@@ -224,22 +276,134 @@ textarea {
 		border-radius: 999px;
 		border: 1px solid var(--color-line);
 		color: var(--color-ink-2);
-		background: rgba(110, 140, 62, 0); /* base, accent variants override */
+		background: rgba(110, 140, 62, 0);
+		box-shadow: inset 0 1px 0 rgba(255, 240, 210, 0.06);
 	}
 	.pill-success {
 		color: var(--color-moss-bright);
-		border-color: rgba(110, 140, 62, 0.4);
-		background: rgba(110, 140, 62, 0.1);
+		border-color: rgba(110, 140, 62, 0.45);
+		background: rgba(110, 140, 62, 0.12);
 	}
 	.pill-warn {
 		color: var(--color-gold-bright);
-		border-color: rgba(178, 147, 91, 0.4);
-		background: rgba(178, 147, 91, 0.08);
+		border-color: rgba(178, 147, 91, 0.45);
+		background: rgba(178, 147, 91, 0.1);
 	}
 	.pill-danger {
 		color: var(--color-rust-bright);
-		border-color: rgba(162, 66, 40, 0.4);
-		background: rgba(162, 66, 40, 0.1);
+		border-color: rgba(162, 66, 40, 0.45);
+		background: rgba(162, 66, 40, 0.12);
+	}
+
+	/* =============================================================
+	   Navigation — top bar links + glass dropdown menus.
+	   ============================================================= */
+	.nav-link {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		/* Match the 44px tap-target the global rule forces on <button> menu
+		   triggers, so links and dropdowns share one height — and the active
+		   underline marker lands at the same baseline for every item. */
+		min-height: 44px;
+		padding: 0.5rem 0.8rem;
+		border-radius: var(--radius-btn);
+		font-family: var(--font-sans);
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--color-ink-2);
+		border: 1px solid transparent;
+		background: transparent;
+		text-decoration: none;
+		cursor: pointer;
+		transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+	}
+	.nav-link .nav-ico {
+		width: 15px;
+		height: 15px;
+		flex: none;
+		opacity: 0.8;
+	}
+	.nav-link:hover {
+		background: var(--color-hover);
+		color: var(--color-ink);
+		border-color: var(--color-line);
+	}
+	.nav-link.is-active {
+		color: var(--color-ink);
+		background: linear-gradient(180deg, rgba(255, 235, 195, 0.05), transparent),
+			var(--color-selected);
+		border-color: var(--color-gold-dim);
+	}
+	.nav-link.is-active .nav-ico {
+		color: var(--color-gold-bright);
+		opacity: 1;
+	}
+	/* Brass "you are here" underline marker. */
+	.nav-link.is-active::after {
+		content: '';
+		position: absolute;
+		left: 0.7rem;
+		right: 0.7rem;
+		bottom: -7px;
+		height: 2px;
+		border-radius: 2px;
+		background: linear-gradient(90deg, transparent, var(--color-gold-bright), transparent);
+		box-shadow: 0 0 6px rgba(214, 176, 116, 0.5);
+	}
+	.nav-caret {
+		width: 12px;
+		height: 12px;
+		opacity: 0.7;
+		transition: transform 0.15s ease;
+	}
+
+	.menu-panel {
+		position: absolute;
+		top: calc(100% + 9px);
+		right: 0;
+		z-index: 40;
+		min-width: 13rem;
+		padding: 0.4rem;
+		border-radius: var(--radius-panel);
+		border: 1px solid var(--color-line-bright);
+		background: linear-gradient(180deg, rgba(58, 49, 38, 0.97), rgba(40, 34, 26, 0.98));
+		-webkit-backdrop-filter: blur(10px);
+		backdrop-filter: blur(10px);
+		box-shadow:
+			0 16px 38px rgba(0, 0, 0, 0.55),
+			inset 0 1px 0 rgba(255, 230, 180, 0.07);
+	}
+	.menu-item {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.55rem 0.7rem;
+		border-radius: var(--radius-btn);
+		font-size: 0.875rem;
+		color: var(--color-ink-2);
+		text-decoration: none;
+		transition: background 0.12s ease, color 0.12s ease;
+	}
+	.menu-item .nav-ico {
+		width: 15px;
+		height: 15px;
+		flex: none;
+		opacity: 0.7;
+	}
+	.menu-item:hover {
+		background: var(--color-hover);
+		color: var(--color-ink);
+	}
+	.menu-item.is-active {
+		background: linear-gradient(180deg, rgba(255, 235, 195, 0.06), transparent),
+			var(--color-selected);
+		color: var(--color-gold-bright);
+	}
+	.menu-item.is-active .nav-ico {
+		color: var(--color-gold-bright);
+		opacity: 1;
 	}
 }
 
@@ -310,9 +474,6 @@ textarea {
 
 /* =============================================================
    Accessibility — font scaling + high contrast.
-   These mirror the Listing Studio approach: a CSS zoom on a wrapper
-   for font scale, a class on a wrapper for high contrast that
-   overrides the brand tokens with sharper, brighter values.
    ============================================================= */
 
 .font-scale-large {
@@ -322,8 +483,6 @@ textarea {
 	zoom: 1.4;
 }
 
-/* High-contrast palette — same approach as LS's body.high-contrast
-   block, with sharper ink and brighter accents. */
 .high-contrast {
 	--color-ink: #ffffff;
 	--color-ink-2: #f4e4b6;
