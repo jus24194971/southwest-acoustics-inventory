@@ -167,11 +167,45 @@ export interface ReverbListing {
 	condition?: { uuid: string; display_name?: string };
 	categories?: Array<{ uuid: string; full_name?: string }>;
 	price?: ReverbMoney;
+	sku?: string;
+	has_inventory?: boolean;
+	inventory?: number;
 	photos?: Array<{ _links?: { large_crop?: { href: string } }; url?: string }>;
 	_links?: {
 		web?: { href: string };
 		self?: { href: string };
 	};
+}
+
+interface ReverbListingsResponse {
+	listings?: ReverbListing[];
+	total?: number;
+	current_page?: number;
+	total_pages?: number;
+	_links?: { next?: { href?: string } };
+}
+
+/**
+ * Enumerate the seller's OWN listings — the source for the cross-platform
+ * reconciliation scrape. `/my/listings` returns everything the account
+ * owns; pass `state` to scope it (`live` = currently up, `all` = incl.
+ * ended/sold/draft). Paginated; the caller loops `page` until
+ * `total_pages`.
+ *
+ * Docs: https://www.reverb-api.com/docs (GET /my/listings)
+ */
+export async function listMyListings(
+	apiKey: string,
+	options: { page?: number; perPage?: number; state?: string } = {}
+): Promise<ReverbListingsResponse> {
+	const url = new URL(`${BASE_URL}/my/listings`);
+	url.searchParams.set('per_page', String(options.perPage ?? 50));
+	if (options.page) url.searchParams.set('page', String(options.page));
+	if (options.state) url.searchParams.set('state', options.state);
+	const res = await fetch(url.toString(), { headers: authHeaders(apiKey) });
+	const body = await res.text();
+	if (!res.ok) throw new ReverbError(res.status, body);
+	return JSON.parse(body) as ReverbListingsResponse;
 }
 
 /**
@@ -223,6 +257,33 @@ export async function updateListing(
 }
 
 /**
+ * End a live Reverb listing (take it off the marketplace). Reverb's
+ * teardown is a state transition, not a DELETE: PUT
+ * /my/listings/{id}/state/end with a reason ("not_sold" = pulled, not a
+ * Reverb sale). A 404 means it's already gone — treat as success so the
+ * dead-listings teardown is idempotent.
+ *
+ * Docs: https://www.reverb-api.com/docs (Listing state transitions)
+ */
+export async function endListing(
+	apiKey: string,
+	listingId: string,
+	reason: 'not_sold' | 'reverb_sale' = 'not_sold'
+): Promise<void> {
+	const res = await fetch(
+		`${BASE_URL}/my/listings/${encodeURIComponent(listingId)}/state/end`,
+		{
+			method: 'PUT',
+			headers: authHeaders(apiKey),
+			body: JSON.stringify({ reason })
+		}
+	);
+	if (res.ok || res.status === 404) return;
+	const body = await res.text();
+	throw new ReverbError(res.status, body);
+}
+
+/**
  * Fetch the current state of a listing from Reverb — useful for
  * the "Did the photos actually attach?" verification step and for
  * unlinking when the listing's been deleted on Reverb's side.
@@ -239,6 +300,104 @@ export async function getListing(
 	if (!res.ok) throw new ReverbError(res.status, body);
 	const parsed = JSON.parse(body);
 	return (parsed.listing ?? parsed) as ReverbListing;
+}
+
+/**
+ * A listing's full photo set as public URLs (large_crop where available,
+ * else the raw url) — used to pull images into inventory. Best-effort:
+ * returns [] if the listing's gone or has no photos.
+ */
+export async function getListingPhotoUrls(apiKey: string, listingId: string): Promise<string[]> {
+	const extract = (listing: ReverbListing): string[] => {
+		const urls: string[] = [];
+		for (const p of listing.photos ?? []) {
+			// Reverb nests sized variants under _links.<size>.href. Prefer a
+			// large render, fall back through the others, then the raw url.
+			const links = p._links as Record<string, { href?: string }> | undefined;
+			const u =
+				links?.large_crop?.href ??
+				links?.full?.href ??
+				links?.large?.href ??
+				links?.small_crop?.href ??
+				p.url;
+			if (u) urls.push(u);
+		}
+		return urls;
+	};
+
+	// The PUBLIC listing endpoint reliably returns the full photos array for
+	// any listing id (the /my/listings/{id} single-fetch did not). Fall back
+	// to the seller endpoint if the public one is unavailable.
+	const res = await fetch(`${BASE_URL}/listings/${encodeURIComponent(listingId)}`, {
+		headers: authHeaders(apiKey)
+	});
+	if (res.ok) {
+		const parsed = JSON.parse(await res.text());
+		const urls = extract((parsed.listing ?? parsed) as ReverbListing);
+		if (urls.length > 0) return urls;
+	}
+	// Fall back to the seller endpoint (throws on error → caller records it).
+	return extract(await getListing(apiKey, listingId));
+}
+
+// ---------- Orders (for pulling SOLD metrics) -------------------------
+//
+// Reverb's selling-orders feed. Each order is a sale referencing a
+// listing (Reverb listings are typically qty 1 — one guitar). We match
+// the order's listing id to our stored Reverb external_id, falling back
+// to SKU. Requires the `read_orders` scope on the PAT (a full-access
+// token has it).
+//
+// Docs: https://www.reverb-api.com/docs#tag/Orders
+
+export interface ReverbOrder {
+	order_number?: string;
+	created_at?: string;
+	/** "unpaid" | "payment_pending" | "paid" | "shipped" | "received" |
+	 *  "refunded" | "cancelled" | ... */
+	status?: string;
+	quantity?: number;
+	sku?: string;
+	title?: string;
+	/** Listing id may appear directly or only via the HAL link. */
+	listing_id?: number | string;
+	_links?: { listing?: { href?: string } };
+}
+
+interface ReverbOrdersResponse {
+	orders?: ReverbOrder[];
+	current_page?: number;
+	total_pages?: number;
+	_links?: { next?: { href?: string } };
+}
+
+/**
+ * Fetch one page of the seller's orders. `/all` is the comprehensive
+ * feed (every status); we filter cancelled/refunded at the call site.
+ */
+export async function listSellingOrders(
+	apiKey: string,
+	options: { page?: number; perPage?: number } = {}
+): Promise<ReverbOrdersResponse> {
+	const url = new URL(`${BASE_URL}/my/orders/selling/all`);
+	url.searchParams.set('per_page', String(options.perPage ?? 50));
+	if (options.page) url.searchParams.set('page', String(options.page));
+	const res = await fetch(url.toString(), { headers: authHeaders(apiKey) });
+	const body = await res.text();
+	if (!res.ok) throw new ReverbError(res.status, body);
+	return JSON.parse(body) as ReverbOrdersResponse;
+}
+
+/**
+ * Pull the listing id out of an order — directly when present, else
+ * parsed from the HAL `listing` link (…/listings/12345). Returns null
+ * when neither is available (we then fall back to SKU matching).
+ */
+export function reverbOrderListingId(o: ReverbOrder): string | null {
+	if (o.listing_id != null && o.listing_id !== '') return String(o.listing_id);
+	const href = o._links?.listing?.href;
+	const m = href?.match(/listings\/(\d+)/);
+	return m ? m[1] : null;
 }
 
 // ---------- Condition mapping ----------------------------------------

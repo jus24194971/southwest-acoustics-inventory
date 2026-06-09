@@ -3,7 +3,6 @@
 	import { untrack } from 'svelte';
 	import type { PageData, ActionData } from './$types';
 	import RichTextEditor from '$lib/components/RichTextEditor.svelte';
-	import { SQUARESPACE_CATEGORIES } from '$lib/squarespace_categories';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
@@ -134,33 +133,23 @@
 
 	const savedJustNow = $derived(page.url.searchParams.get('saved') === '1');
 	const pushedJustNow = $derived(page.url.searchParams.get('pushed') === '1');
+	// Wizard context + photo-upload flashes (the reconcile "list it on SS" flow
+	// routes sellable-but-unlisted items here to add photos + push).
+	const fromReconcile = $derived(page.url.searchParams.get('from') === 'reconcile');
+	const photosAdded = $derived(page.url.searchParams.get('photos_added'));
+	const photoWarnFlash = $derived(page.url.searchParams.get('photo_warn'));
 
 	// Initial values for the inputs — start from the listing if there is
 	// one, fall back to the item. Captured once on mount via untrack so
 	// the user's edits stay put even if data refetches.
-	// Fresh listing? = no saved categories yet. We pre-check the
-	// suggestions returned by the load() function so the user
-	// doesn't have to manually file every new listing into a sub-shop.
-	// Once they save (even with all the defaults), the same suggestions
-	// get *learned* — future items of the same kind suggest them with
-	// higher confidence.
-	const isFreshListing = !data.listing?.listing_categories_json;
-
+	//
+	// Storefront defaults to the only available option when there's
+	// exactly one (Dad's site has just "shop"). This skips the
+	// "—pick a store page—" placeholder so Push works without any
+	// extra clicks on a fresh listing.
 	const initial = untrack(() => {
-		const savedCategories = tagsFromJson(data.listing?.listing_categories_json ?? null)
-			.split(',')
-			.map((s) => s.trim())
-			.filter(Boolean);
-		// On a fresh listing, lean on the suggestion engine; otherwise
-		// honor whatever the user picked previously.
-		const startingCategories = isFreshListing
-			? data.autoCheckedSlugs
-			: savedCategories;
-		// Free shipping: same logic — default from suggestions on fresh
-		// listings, respect saved value on existing ones.
-		const startingFreeShipping = isFreshListing
-			? data.freeShippingSuggestion.suggested
-			: data.listing!.listing_free_shipping === 1;
+		const onlyStorefrontId =
+			data.storefronts.length === 1 ? data.storefronts[0].id : '';
 		return {
 			title: data.listing?.listing_title ?? data.item.title,
 			description: data.listing?.listing_description_html ?? data.item.description_html ?? '',
@@ -173,43 +162,128 @@
 						? (data.item.price_cents / 100).toFixed(2)
 						: '',
 			visible: data.listing ? data.listing.listing_visible === 1 : true,
-			storefrontId: data.listing?.storefront_id ?? '',
-			categories: startingCategories,
-			freeShipping: startingFreeShipping,
-			weightOz:
-				data.listing?.listing_weight_oz != null ? String(data.listing.listing_weight_oz) : ''
+			storefrontId: data.listing?.storefront_id ?? onlyStorefrontId
 		};
 	});
-
-	// Bindable category state — a Set of slugs that's checked in the
-	// multi-select. Reactive so the checkbox list reflects the picked
-	// state and the form submits a "listing_category" entry per slug.
-	let selectedCategories = $state(new Set<string>(initial.categories));
-	let freeShipping = $state(initial.freeShipping);
-
-	// Set of slugs the suggestion engine marked as auto-suggested —
-	// used to render the ✨ indicator in the UI regardless of whether
-	// they're actually checked.
-	let suggestedSet = $derived(new Set(data.autoCheckedSlugs));
-
-	function toggleCategory(slug: string) {
-		if (selectedCategories.has(slug)) selectedCategories.delete(slug);
-		else selectedCategories.add(slug);
-		// Trigger reactivity — Svelte 5 doesn't reactively track Set
-		// mutations. Reassign a new Set so derived UI updates.
-		selectedCategories = new Set(selectedCategories);
-	}
-
-	function applyAllSuggestions() {
-		for (const slug of data.autoCheckedSlugs) selectedCategories.add(slug);
-		selectedCategories = new Set(selectedCategories);
-	}
 
 	let visible = $state(initial.visible);
 	// Bound to the listing title input so the AI modal can write into
 	// it. Initialised once via untrack so subsequent data reloads don't
 	// stomp the user's edits.
 	let listingTitle = $state(initial.title);
+
+	// ----------------------------------------------------------------
+	// SEO TITLE + META DESCRIPTION (Squarespace `seoOptions` field)
+	// ----------------------------------------------------------------
+	// Both bound so the AI suggester can populate them, and so the
+	// per-input character counters track length in real time.
+	//
+	// Limits explained:
+	//   - SS admin hard caps: 100 char title, 400 char description.
+	//   - Google SERP truncation: ~60 char title, ~160 char description.
+	// We color-code GREEN at the Google target, GOLD between target and
+	// SS cap (still publishable, just may truncate on Google), and RED
+	// over the SS cap (the server will hard-truncate at push time).
+	let seoTitle = $state(data.listing?.listing_seo_title ?? '');
+	let seoDescription = $state(data.listing?.listing_seo_description ?? '');
+
+	const SEO_TITLE_GOOGLE_TARGET = 60;
+	const SEO_TITLE_HARD_CAP = 100;
+	const SEO_DESC_GOOGLE_TARGET = 160;
+	const SEO_DESC_HARD_CAP = 400;
+
+	let seoTitleLength = $derived(seoTitle.length);
+	let seoTitleCounterColor = $derived(
+		seoTitleLength === 0
+			? 'var(--color-ink-4)'
+			: seoTitleLength <= SEO_TITLE_GOOGLE_TARGET
+				? 'var(--color-moss-bright)'
+				: seoTitleLength <= SEO_TITLE_HARD_CAP
+					? 'var(--color-gold-bright)'
+					: 'var(--color-rust-bright)'
+	);
+	let seoDescLength = $derived(seoDescription.length);
+	let seoDescCounterColor = $derived(
+		seoDescLength === 0
+			? 'var(--color-ink-4)'
+			: seoDescLength <= SEO_DESC_GOOGLE_TARGET
+				? 'var(--color-moss-bright)'
+				: seoDescLength <= SEO_DESC_HARD_CAP
+					? 'var(--color-gold-bright)'
+					: 'var(--color-rust-bright)'
+	);
+
+	// AI SEO suggester state — mirrors the tag suggester pattern.
+	// Inline (no modal): the SEO outputs are short enough that we just
+	// drop them into the inputs directly, the way the tag pills do.
+	let seoAiBusy = $state(false);
+	let seoAiError = $state<string | null>(null);
+	// Optional steering text for refinement runs.
+	let seoAiInstructions = $state('');
+	// Track whether we've ever populated SEO (initial run vs refinement).
+	let seoEverGenerated = $derived(seoTitle.length > 0 || seoDescription.length > 0);
+
+	async function suggestSeoFromAi() {
+		seoAiBusy = true;
+		seoAiError = null;
+		try {
+			const descriptionHtml = getEditorHtml();
+			const payload: Record<string, string> = {
+				title: listingTitle,
+				descriptionHtml
+			};
+			const instructions = seoAiInstructions.trim();
+			// Refinement when we have existing SEO + instructions.
+			if (instructions && seoEverGenerated) {
+				payload.instructions = instructions;
+				if (seoTitle) payload.existingSeoTitle = seoTitle;
+				if (seoDescription) payload.existingSeoDescription = seoDescription;
+			} else if (instructions) {
+				// First run, but user wants to steer it.
+				payload.instructions = instructions;
+			}
+
+			const res = await fetch(`/api/listings/${data.item.id}/squarespace/suggest-seo`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify(payload)
+			});
+			if (!res.ok) {
+				const text = await res.text();
+				seoAiError = `${res.status}: ${text.slice(0, 200)}`;
+				return;
+			}
+			const out = (await res.json()) as {
+				seoTitle: string;
+				seoDescription: string;
+			};
+			seoTitle = out.seoTitle;
+			seoDescription = out.seoDescription;
+			// Clear instructions on success so the next refinement is blank.
+			seoAiInstructions = '';
+		} catch (err) {
+			seoAiError = err instanceof Error ? err.message : String(err);
+		} finally {
+			seoAiBusy = false;
+		}
+	}
+
+	// One-shot "Copied" feedback on the reminder-banner copy buttons.
+	// Keyed by field name so two adjacent buttons can show their flash
+	// independently. Resets after 1.5s.
+	let copiedFlash = $state<string | null>(null);
+	async function copyText(value: string, key: string) {
+		if (!value) return;
+		try {
+			await navigator.clipboard.writeText(value);
+			copiedFlash = key;
+			setTimeout(() => {
+				if (copiedFlash === key) copiedFlash = null;
+			}, 1500);
+		} catch (err) {
+			console.error('clipboard write failed', err);
+		}
+	}
 
 	// ----------------------------------------------------------------
 	// Title character counter
@@ -319,16 +393,112 @@
 	};
 
 	let status = $derived(data.listing?.status ?? 'draft');
+
+	// ----------------------------------------------------------------
+	// Client-side photo upload to Squarespace.
+	// ----------------------------------------------------------------
+	// We do NOT transcode images in the Worker anymore (Photon WASM blew
+	// the per-request CPU/memory limit on multi-photo pushes). Instead,
+	// after a create/recreate redirect carries `?needs_photos=N`, the
+	// browser fetches each photo, downscales + re-encodes it to JPEG on a
+	// canvas (no CPU cap here), and POSTs them ONE AT A TIME to a thin
+	// relay endpoint. This keeps every request tiny on the server.
+	let photoBusy = $state(false);
+	let photoDone = $state(0);
+	let photoTotal = $state(0);
+	let photoErrors = $state<string[]>([]);
+	let photoFinished = $state(false);
+
+	const MAX_DIM = 2048; // cap long edge — plenty for SS, keeps uploads small
+
+	async function transcodeToJpeg(r2Key: string): Promise<Blob> {
+		const res = await fetch(`/api/photos/${r2Key}`);
+		if (!res.ok) throw new Error(`fetch photo ${res.status}`);
+		const srcBlob = await res.blob();
+		const bitmap = await createImageBitmap(srcBlob);
+		let w = bitmap.width;
+		let h = bitmap.height;
+		const scale = Math.min(1, MAX_DIM / Math.max(w, h));
+		w = Math.round(w * scale);
+		h = Math.round(h * scale);
+		const canvas = document.createElement('canvas');
+		canvas.width = w;
+		canvas.height = h;
+		const ctx = canvas.getContext('2d');
+		if (!ctx) throw new Error('no canvas context');
+		ctx.drawImage(bitmap, 0, 0, w, h);
+		bitmap.close?.();
+		return await new Promise<Blob>((resolve, reject) =>
+			canvas.toBlob(
+				(b) => (b ? resolve(b) : reject(new Error('canvas toBlob failed'))),
+				'image/jpeg',
+				0.85
+			)
+		);
+	}
+
+	async function uploadPhotosToSs() {
+		if (photoBusy || data.photos.length === 0) return;
+		photoBusy = true;
+		photoFinished = false;
+		photoErrors = [];
+		photoDone = 0;
+		photoTotal = data.photos.length;
+		for (let i = 0; i < data.photos.length; i++) {
+			const p = data.photos[i];
+			try {
+				const jpeg = await transcodeToJpeg(p.r2_key);
+				const fd = new FormData();
+				fd.append('file', jpeg, `photo-${i + 1}.jpg`);
+				const up = await fetch(
+					`/api/listings/${data.item.id}/squarespace/upload-photo`,
+					{ method: 'POST', body: fd }
+				);
+				const r = (await up.json()) as { ok: boolean; error?: string };
+				if (!r.ok) photoErrors.push(`Photo ${i + 1}: ${r.error ?? 'failed'}`);
+			} catch (err) {
+				photoErrors.push(`Photo ${i + 1}: ${err instanceof Error ? err.message : String(err)}`);
+			}
+			photoDone = i + 1;
+		}
+		photoBusy = false;
+		photoFinished = true;
+	}
+
+	// Auto-start the upload when a push/recreate/repush redirect lands on
+	// `?needs_photos=N`. We watch the URL (reactive) rather than using
+	// onMount because `use:enhance` resolves the redirect with a
+	// client-side navigation that reuses this component instance — onMount
+	// wouldn't re-fire. `lastPhotoHref` is a plain (non-reactive) guard so
+	// each distinct redirect URL kicks the upload exactly once.
+	let lastPhotoHref = '';
+	$effect(() => {
+		const href = page.url.href; // reactive dependency — re-runs on navigation
+		const needs = parseInt(page.url.searchParams.get('needs_photos') ?? '', 10);
+		if (Number.isInteger(needs) && needs > 0 && href !== lastPhotoHref && data.photos.length > 0) {
+			lastPhotoHref = href;
+			void uploadPhotosToSs();
+		}
+	});
 </script>
 
 <section class="space-y-6">
 	<header class="space-y-2">
-		<a
-			href="/items/{encodeURIComponent(data.item.sku)}"
-			class="eyebrow inline-flex items-center gap-1 text-[color:var(--color-ink-3)] hover:text-[color:var(--color-gold-bright)]"
-		>
-			← Back to item
-		</a>
+		{#if fromReconcile}
+			<a
+				href="/reconcile/wizard"
+				class="eyebrow inline-flex items-center gap-1 text-[color:var(--color-gold-bright)] hover:underline"
+			>
+				← Back to the review wizard
+			</a>
+		{:else}
+			<a
+				href="/items/{encodeURIComponent(data.item.sku)}"
+				class="eyebrow inline-flex items-center gap-1 text-[color:var(--color-ink-3)] hover:text-[color:var(--color-gold-bright)]"
+			>
+				← Back to item
+			</a>
+		{/if}
 		<div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
 			<p class="font-mono text-sm text-[color:var(--color-gold)]">{data.item.sku}</p>
 			<span class={STATUS_PILL[status] ?? 'pill'}>{STATUS_LABEL[status] ?? status}</span>
@@ -339,6 +509,113 @@
 			a field blank to fall back to the item's value.
 		</p>
 	</header>
+
+	{#if fromReconcile}
+		<div class="panel px-4 py-3" style="border-color: var(--color-gold-dim)">
+			<p class="text-sm text-[color:var(--color-gold-bright)]">
+				This item isn't on Squarespace yet. Add photos, set the title + description (the ✨ AI
+				button writes both), pick a storefront, then <strong>Push</strong> to list it — then use
+				“← Back to the review wizard” up top to keep going.
+			</p>
+		</div>
+	{/if}
+
+	{#if page.url.searchParams.get('linked')}
+		<div class="panel px-4 py-3" style="border-color: var(--color-moss-bright)">
+			<p class="text-sm text-[color:var(--color-moss-bright)]">
+				✓ Linked to the Squarespace listing{#if page.url.searchParams.get('photos')} · pulled {page.url.searchParams.get('photos')} photo(s){/if}.
+			</p>
+		</div>
+	{/if}
+
+	<!-- Link an EXISTING Squarespace listing the auto-match missed (divergent
+	     title/slug/SKU). Paste its URL → found by slug and linked; no new
+	     product is created. Shown only when not already linked. -->
+	{#if !data.listing?.external_id}
+		<div class="panel space-y-2 px-5 py-4" style="border-color: var(--color-gold-dim)">
+			<p class="text-sm text-[color:var(--color-ink)]">Already listed on Squarespace?</p>
+			<p class="text-[12px] text-[color:var(--color-ink-3)]">
+				If this item already has a Squarespace page the app didn’t auto-match, paste its URL to link
+				them — no new listing is created, and its photos come along.
+			</p>
+			<form method="POST" action="?/linkExisting" class="flex flex-wrap items-center gap-2">
+				<input
+					type="text"
+					name="ss_url"
+					placeholder="https://…/shop/p/your-listing-slug"
+					class="field min-w-0 flex-1 py-1.5 text-sm"
+				/>
+				<button type="submit" class="btn-primary px-4 py-2 text-sm whitespace-nowrap">Link it</button>
+			</form>
+			{#if form?.linkError}
+				<p class="text-[12px] text-[color:var(--color-rust-bright)]">{form.linkError}</p>
+			{/if}
+		</div>
+	{/if}
+
+	<!-- Photos — add them to the item right here so this page is a one-stop
+	     "list it on Squarespace" surface. Reorder/remove still live on the
+	     item page (linked). Uploads go through the shared item-photo helper. -->
+	<div class="panel space-y-3 px-5 py-4">
+		<div class="flex flex-wrap items-center justify-between gap-2">
+			<p class="eyebrow">
+				Photos{#if data.photos.length}<span class="text-[color:var(--color-ink-3)]"> · {data.photos.length} on file</span>{/if}
+			</p>
+			<a
+				href="/items/{encodeURIComponent(data.item.sku)}"
+				class="text-[11px] text-[color:var(--color-gold-bright)] hover:underline"
+			>
+				Reorder / remove on item page ↗
+			</a>
+		</div>
+
+		{#if data.photos.length > 0}
+			<div class="flex flex-wrap gap-2">
+				{#each data.photos as p (p.id)}
+					<img
+						src="/api/photos/{p.r2_key}"
+						alt=""
+						class="h-16 w-16 rounded object-cover ring-1 ring-[color:var(--color-line-dim)]"
+						loading="lazy"
+					/>
+				{/each}
+			</div>
+		{:else}
+			<p class="text-[12px] text-[color:var(--color-gold-bright)]">
+				No photos yet — add some so they publish with the listing.
+			</p>
+		{/if}
+
+		<form
+			method="POST"
+			action="?/uploadPhotos"
+			enctype="multipart/form-data"
+			class="flex flex-wrap items-center gap-2"
+		>
+			<input type="hidden" name="from" value={fromReconcile ? 'reconcile' : ''} />
+			<input
+				type="file"
+				name="photos"
+				accept="image/jpeg,image/png,image/webp,image/gif"
+				multiple
+				required
+				class="text-[12px] text-[color:var(--color-ink-2)] file:mr-2 file:rounded file:border-0 file:bg-[color:var(--color-input)] file:px-3 file:py-1.5 file:text-[color:var(--color-ink)]"
+			/>
+			<button type="submit" class="btn-ghost px-3 py-1.5 text-sm whitespace-nowrap">
+				Upload photos
+			</button>
+		</form>
+
+		{#if photosAdded}
+			<p class="text-[12px] text-[color:var(--color-moss-bright)]">Added {photosAdded} photo(s).</p>
+		{/if}
+		{#if photoWarnFlash}
+			<p class="text-[12px] text-[color:var(--color-gold-bright)]">{photoWarnFlash}</p>
+		{/if}
+		{#if form?.photoError}
+			<p class="text-[12px] text-[color:var(--color-rust-bright)]">{form.photoError}</p>
+		{/if}
+	</div>
 
 	{#if savedJustNow}
 		<div class="panel px-4 py-3" style="border-color: var(--color-moss)">
@@ -367,34 +644,63 @@
 		<div class="panel px-4 py-3" style="border-color: var(--color-moss)">
 			<p class="text-sm text-[color:var(--color-moss-bright)]">
 				{#if page.url.searchParams.get('recreated') === '1'}
-					Recreated on Squarespace. The previous product was deleted on Squarespace's side, so
-					a fresh one was created with the latest content
-					{#if page.url.searchParams.get('photos')}
-						and {page.url.searchParams.get('photos')} photo(s) uploaded
-					{/if}.
+					Recreated on Squarespace. The previous product was deleted on Squarespace's side, so a
+					fresh one was created with the latest content.
+				{:else if page.url.searchParams.get('adopted') === '1'}
+					Found your existing Squarespace listing (matched by SKU) and updated it in place — no
+					duplicate created. The link is now saved, so future pushes update it directly.
 				{:else if page.url.searchParams.get('photo_action') === 'repush'}
-					{page.url.searchParams.get('photos') ?? 0} photo(s) uploaded to existing Squarespace listing.
+					Re-pushing photos to the existing Squarespace listing.
 				{:else}
 					Pushed to Squarespace successfully.
-					{#if page.url.searchParams.get('photos')}
-						{page.url.searchParams.get('photos')} photo(s) uploaded.
-					{/if}
 				{/if}
 			</p>
-			{#if page.url.searchParams.get('photo_warn')}
-				<p class="mt-1 text-xs text-[color:var(--color-gold-bright)]">
-					⚠ {page.url.searchParams.get('photo_warn')}
-				</p>
-				{#if data.listing?.last_sync_error}
-					<details class="mt-2 text-[11px] text-[color:var(--color-ink-3)]">
-						<summary class="cursor-pointer hover:text-[color:var(--color-ink-2)]">
-							Why? · Squarespace response
-						</summary>
-						<pre
-							class="mt-2 max-h-48 overflow-auto rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-input)] p-2 font-mono text-[10px] leading-relaxed whitespace-pre-wrap break-words"
-							>{data.listing.last_sync_error}</pre>
-					</details>
-				{/if}
+
+			<!-- Live photo-upload progress. Photos are transcoded to JPEG
+				 in the browser (canvas, no CPU limit) and POSTed one at a
+				 time to the relay endpoint, so the Worker never runs image
+				 processing. This is the fix for the "Worker exceeded
+				 resource limits" error on multi-photo pushes. -->
+			{#if photoTotal > 0 || photoBusy}
+				<div class="mt-2">
+					{#if photoBusy}
+						<p class="text-xs text-[color:var(--color-ink-2)]">
+							Uploading photos… {photoDone}/{photoTotal}
+						</p>
+						<div
+							class="mt-1 h-1.5 w-full overflow-hidden rounded bg-[color:var(--color-input)]"
+						>
+							<div
+								class="h-full bg-[color:var(--color-moss-bright)] transition-all"
+								style="width: {photoTotal ? Math.round((photoDone / photoTotal) * 100) : 0}%"
+							></div>
+						</div>
+					{:else if photoFinished}
+						<p class="text-xs text-[color:var(--color-moss-bright)]">
+							{photoDone - photoErrors.length} of {photoTotal} photo(s) uploaded. Photos take a
+							few seconds to appear — Squarespace processes them after upload.
+						</p>
+					{/if}
+
+					{#if photoErrors.length > 0}
+						<details class="mt-2 text-[11px] text-[color:var(--color-gold-bright)]">
+							<summary class="cursor-pointer">⚠ {photoErrors.length} photo(s) failed</summary>
+							<ul class="mt-1 space-y-0.5 text-[color:var(--color-ink-3)]">
+								{#each photoErrors as e}
+									<li class="font-mono text-[10px] break-words">{e}</li>
+								{/each}
+							</ul>
+							<button
+								type="button"
+								class="mt-2 rounded border border-[color:var(--color-gold-dim)] px-2 py-1 text-[11px] text-[color:var(--color-gold-bright)] hover:bg-[color:var(--color-input)] disabled:opacity-50"
+								onclick={() => uploadPhotosToSs()}
+								disabled={photoBusy}
+							>
+								Retry photo upload
+							</button>
+						</details>
+					{/if}
+				</div>
 			{/if}
 			{#if data.listing?.external_id}
 				<p class="mt-1 font-mono text-xs text-[color:var(--color-ink-3)]">
@@ -432,7 +738,77 @@
 							<strong class="text-[color:var(--color-ink)]">Fulfillment Profile</strong> —
 							which shipping option set (Flat Rate Electric Guitar, Free Shipping, etc.)
 						</li>
+						{#if data.listing.listing_seo_title || data.listing.listing_seo_description}
+							<li>
+								<strong class="text-[color:var(--color-ink)]">SEO Title + Description</strong>
+								— paste from below into the product's SEO panel
+							</li>
+						{/if}
 					</ul>
+
+					{#if data.listing.listing_seo_title || data.listing.listing_seo_description}
+						<!-- SEO copy-paste block.
+							 The SS Products API rejects writes to both candidate field
+							 names (seoData and seoOptions return HTTP 400 "unknown or
+							 readonly fields"), so Dad still has to paste these into
+							 the admin manually. Per-field copy buttons drop the
+							 friction to one click + Cmd-V. -->
+						<div
+							class="mt-2 space-y-1.5 rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-shell)] p-2"
+						>
+							<p class="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--color-gold-dim)]">
+								SEO — copy each, paste into admin
+							</p>
+							{#if data.listing.listing_seo_title}
+								<div class="flex items-start gap-2">
+									<div class="flex-1 min-w-0">
+										<p class="text-[10px] text-[color:var(--color-ink-4)]">SEO TITLE</p>
+										<p
+											class="truncate font-mono text-[11px] text-[color:var(--color-ink-2)]"
+											title={data.listing.listing_seo_title}
+										>
+											{data.listing.listing_seo_title}
+										</p>
+									</div>
+									<button
+										type="button"
+										class="shrink-0 rounded border border-[color:var(--color-line)] bg-[color:var(--color-panel-2)] px-2 py-1 font-mono text-[10px] text-[color:var(--color-gold-bright)] transition-colors hover:bg-[color:var(--color-hover)]"
+										onclick={() =>
+											copyText(data.listing!.listing_seo_title ?? '', 'seo_title')}
+										style="min-height: auto"
+									>
+										{copiedFlash === 'seo_title' ? '✓ Copied' : 'Copy'}
+									</button>
+								</div>
+							{/if}
+							{#if data.listing.listing_seo_description}
+								<div class="flex items-start gap-2">
+									<div class="flex-1 min-w-0">
+										<p class="text-[10px] text-[color:var(--color-ink-4)]">SEO DESCRIPTION</p>
+										<p
+											class="text-[11px] text-[color:var(--color-ink-2)] line-clamp-2"
+											title={data.listing.listing_seo_description}
+										>
+											{data.listing.listing_seo_description}
+										</p>
+									</div>
+									<button
+										type="button"
+										class="shrink-0 rounded border border-[color:var(--color-line)] bg-[color:var(--color-panel-2)] px-2 py-1 font-mono text-[10px] text-[color:var(--color-gold-bright)] transition-colors hover:bg-[color:var(--color-hover)]"
+										onclick={() =>
+											copyText(
+												data.listing!.listing_seo_description ?? '',
+												'seo_desc'
+											)}
+										style="min-height: auto"
+									>
+										{copiedFlash === 'seo_desc' ? '✓ Copied' : 'Copy'}
+									</button>
+								</div>
+							{/if}
+						</div>
+					{/if}
+
 					<p class="mt-2 text-[11px]">
 						<a
 							href="https://www.southwestacousticproducts.com/config/commerce/inventory/{data.listing.external_id}"
@@ -444,8 +820,9 @@
 						</a>
 					</p>
 					<p class="mt-1 text-[10px] italic text-[color:var(--color-ink-4)]">
-						These two fields aren't exposed by the SS public API — only the admin UI can
-						set them. Once set on the SS side, they survive future re-pushes from here.
+						These fields aren't exposed by the SS public API — only the admin UI can
+						set them. Once set on the SS side, they survive future re-pushes from here
+						(and a Pull will mirror them back to this page).
 					</p>
 				</div>
 			{/if}
@@ -635,159 +1012,181 @@
 			{/if}
 		</div>
 
-		<!-- ============= Storefront categories ============= -->
 		<!--
-			SS has real Product Categories (separate from Tags). The
-			Commerce API's public docs only list `tags`, but the admin
-			UI shows Categories as their own field driving sub-shop
-			navigation. We send BOTH on push: the category's actual
-			display name in payload.categories[] (likely undocumented
-			but works in practice), and the URL slug in payload.tags[]
-			as a fallback for tag-based storefront filters.
+			Categories + Shipping fieldsets removed. Both used to live
+			here. Categories went away because the SS Products API
+			rejects the field on writes — the in-app checkboxes had no
+			effect on the actual push. Dad still assigns categories in
+			SS admin (the post-push reminder banner points him at the
+			right deep-link). Shipping went away because Dad isn't
+			using the tag-driven shipping workflow — he'll set the
+			fulfillment profile in SS admin instead.
 
-			Suggestions are pre-checked on fresh listings via the
-			data.autoCheckedSlugs prop. The ✨ glyph on each checkbox
-			label shows which slugs the engine flagged for this item.
+			DB columns `listing_categories_json`, `listing_free_shipping`,
+			and `listing_weight_oz` are left in the schema as dead
+			columns — cheap to keep, and if the SS API ever opens these
+			up we won't need a migration to restore the feature.
+		-->
+
+		<!-- ============= SEO ============= -->
+		<!--
+			SEO TITLE + META DESCRIPTION map to Squarespace's `seoOptions`
+			(returned as `null` when unset, in which case SS auto-derives
+			both fields from the product name + description). We send
+			whatever Dad sets here on push; leaving both blank keeps SS's
+			auto-derivation.
+
+			Caps are dual-tier:
+			  - Squarespace admin: 100 char title, 400 char description.
+			  - Google SERP truncation: ~60 char title, ~160 char description.
+			Counters turn green at Google's target, gold between target and
+			SS cap (still publishes, just may truncate on Google), red over
+			the SS cap (server hard-truncates at push). The AI suggester
+			aims at the Google targets to maximize SERP completeness.
 		-->
 		<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
-			<legend class="eyebrow px-2">Squarespace categories</legend>
+			<legend class="eyebrow px-2">SEO (Google search appearance)</legend>
 
-			{#if data.autoCheckedSlugs.length > 0}
-				<div
-					class="rounded border border-[color:var(--color-gold-dim)] bg-[color:var(--color-input)] px-3 py-2 text-[11px]"
+			<div
+				class="rounded border border-[color:var(--color-gold-dim)] bg-[color:var(--color-input)] px-3 py-2 text-[11px] text-[color:var(--color-gold-bright)]"
+			>
+				⚠ Copy-paste workflow. Squarespace's Products API doesn't let us write SEO fields
+				directly (both <code>seoData</code> and <code>seoOptions</code> are rejected — same
+				admin-only restriction as Categories). Draft the SEO here with AI and the post-push
+				reminder banner will give you one-click copy buttons to paste into the SS admin's
+				SEO panel.
+			</div>
+
+			<div class="flex flex-wrap items-baseline justify-between gap-3">
+				<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
+					Leaving both blank lets Squarespace auto-derive them from the title + description
+					above. Fill in to override what shows in Google search results.
+				</p>
+				<button
+					type="button"
+					class="btn-ghost px-2 py-1 text-[11px]"
+					onclick={suggestSeoFromAi}
+					disabled={seoAiBusy || !data.hasAiKey}
+					title={data.hasAiKey
+						? 'Generate SEO title + meta description based on the title and description above'
+						: 'ANTHROPIC_API_KEY not configured'}
 				>
-					<div class="flex items-baseline justify-between gap-2">
-						<p class="text-[color:var(--color-gold-bright)]">
-							✨ Suggested for this item — {data.autoCheckedSlugs.length}
-							sub-shop{data.autoCheckedSlugs.length === 1 ? '' : 's'} based on category{data.suggestions.some(
-								(s) => s.reasons.some((r) => r.startsWith('Learned'))
-							)
-								? ', past picks'
-								: ''}{data.suggestions.some((s) =>
-								s.reasons.some((r) => r.includes('Title'))
-							)
-								? ', title'
-								: ''}.
-						</p>
-						<button
-							type="button"
-							class="text-[color:var(--color-gold-bright)] hover:underline"
-							onclick={applyAllSuggestions}
-						>
-							Apply all
-						</button>
-					</div>
-				</div>
+					{seoAiBusy ? 'Drafting…' : seoEverGenerated ? '✨ Regenerate SEO' : '✨ Suggest SEO from listing'}
+				</button>
+			</div>
+
+			{#if seoAiError}
+				<p class="text-xs text-[color:var(--color-rust-bright)]">{seoAiError}</p>
 			{/if}
 
-			<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
-				Pick every sub-shop this listing should appear on. Push sends the category names to
-				Squarespace's <span class="font-mono">categories</span> field (drives the sub-shop
-				navigation), plus the slug as a tag fallback. If after pushing the categories don't
-				appear in SS admin, the API likely didn't accept the field and Dad will need to
-				assign them in SS admin manually — the tag still works for URL filtering.
-			</p>
-
-			{#each ['guitars', 'parts', 'special'] as group}
-				<div class="space-y-1">
-					<p
-						class="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--color-gold-dim)]"
-					>
-						{group === 'guitars' ? 'Guitars' : group === 'parts' ? 'Parts & accessories' : 'Cross-cutting'}
-					</p>
-					<div class="grid gap-1.5 sm:grid-cols-2">
-						{#each SQUARESPACE_CATEGORIES.filter((c) => c.group === group) as cat (cat.slug)}
-							{@const suggestion = data.suggestions.find((s) => s.slug === cat.slug)}
-							<label
-								class="flex items-start gap-2 text-xs"
-								title={suggestion && suggestion.reasons.length > 0
-									? 'Suggested because: ' + suggestion.reasons.join('; ')
-									: undefined}
-							>
-								<input
-									type="checkbox"
-									name="listing_category"
-									value={cat.slug}
-									checked={selectedCategories.has(cat.slug)}
-									onchange={() => toggleCategory(cat.slug)}
-									class="mt-0.5 h-3.5 w-3.5 accent-[color:var(--color-gold)]"
-									style="min-height: auto"
-								/>
-								<span class="text-[color:var(--color-ink-2)]">
-									{cat.label}
-									<span class="ml-1 font-mono text-[10px] text-[color:var(--color-ink-4)]"
-										>{cat.slug}</span
-									>
-									{#if suggestedSet.has(cat.slug)}
-										<span
-											class="ml-1 text-[10px] text-[color:var(--color-gold-bright)]"
-											title="Auto-suggested by the engine">✨</span
-										>
-									{/if}
-								</span>
-							</label>
-						{/each}
-					</div>
-				</div>
-			{/each}
-		</fieldset>
-
-		<!-- ============= Shipping ============= -->
-		<fieldset class="space-y-3 rounded border border-[color:var(--color-line-dim)] p-4">
-			<legend class="eyebrow px-2">Shipping</legend>
-
-			<label class="flex items-start gap-3">
-				<input
-					type="checkbox"
-					name="listing_free_shipping"
-					bind:checked={freeShipping}
-					class="mt-0.5 h-4 w-4 accent-[color:var(--color-gold)]"
-					style="min-height: auto"
-				/>
-				<div class="space-y-0.5">
-					<span class="text-sm font-medium text-[color:var(--color-ink)]"
-						>Free shipping on this listing</span
-					>
-					<p class="text-[11px] text-[color:var(--color-ink-3)]">
-						Appends the <span class="font-mono">free-shipping</span> tag on push. You'll need
-						a matching Squarespace shipping rule in your store admin: <em>"Items with
-							free-shipping tag → $0"</em>.
-					</p>
-				</div>
-			</label>
-
 			<div class="space-y-1.5">
-				<label for="listing_weight_oz" class="eyebrow block">
-					Shipping weight (oz) <span class="lowercase">— optional</span>
-				</label>
+				<div class="flex items-baseline justify-between gap-3">
+					<label for="listing_seo_title" class="eyebrow block">SEO title</label>
+					<span
+						class="font-mono text-[10px]"
+						style:color={seoTitleCounterColor}
+						title="Google SERP target: 60 chars. Squarespace hard cap: 100 chars."
+					>
+						{seoTitleLength} / {SEO_TITLE_HARD_CAP}
+						{#if seoTitleLength > SEO_TITLE_HARD_CAP}
+							· too long — will truncate
+						{:else if seoTitleLength > SEO_TITLE_GOOGLE_TARGET}
+							· may truncate on Google
+						{/if}
+					</span>
+				</div>
 				<input
-					id="listing_weight_oz"
-					name="listing_weight_oz"
-					type="number"
-					step="0.1"
-					min="0"
-					value={initial.weightOz}
-					placeholder="e.g. 8 for half a pound"
+					id="listing_seo_title"
+					name="listing_seo_title"
+					type="text"
+					bind:value={seoTitle}
+					maxlength={SEO_TITLE_HARD_CAP}
+					placeholder="e.g. Ivy IJZ-300 Semi-Hollow Jazz Guitar in Sunburst"
 					class="field"
 				/>
 				<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
-					Pushed as the variant's shipping weight so Squarespace's weight-based shipping
-					rules can calculate the right rate. Leave blank if you're using free shipping or
-					a flat-rate tag instead.
+					Best under 60 chars so Google's search result doesn't truncate it. Lead with brand
+					+ model + product type.
 				</p>
 			</div>
 
-			<p class="text-[11px] text-[color:var(--color-ink-4)]">
-				For a per-listing flat shipping rate (e.g. <em>"this guitar ships $20"</em>), add a
-				tag like <span class="font-mono">ship-20</span> above and configure a matching
-				shipping rule in Squarespace admin. The SS Products API doesn't expose a direct
-				per-product shipping cost field — tag-driven rules are how it works.
-			</p>
+			<div class="space-y-1.5">
+				<div class="flex items-baseline justify-between gap-3">
+					<label for="listing_seo_description" class="eyebrow block">SEO description</label>
+					<span
+						class="font-mono text-[10px]"
+						style:color={seoDescCounterColor}
+						title="Google SERP target: 160 chars. Squarespace hard cap: 400 chars."
+					>
+						{seoDescLength} / {SEO_DESC_HARD_CAP}
+						{#if seoDescLength > SEO_DESC_HARD_CAP}
+							· too long — will truncate
+						{:else if seoDescLength > SEO_DESC_GOOGLE_TARGET}
+							· may truncate on Google
+						{/if}
+					</span>
+				</div>
+				<textarea
+					id="listing_seo_description"
+					name="listing_seo_description"
+					bind:value={seoDescription}
+					rows="3"
+					maxlength={SEO_DESC_HARD_CAP}
+					placeholder="One or two sentences describing what the product is and one selling point. Aim under 160 chars."
+					class="field text-sm"
+				></textarea>
+				<p class="text-[11px] italic text-[color:var(--color-ink-3)]">
+					This is the snippet that shows under the title in Google's search results. Best
+					under 160 chars. Don't repeat the SEO title word-for-word.
+				</p>
+			</div>
+
+			{#if data.hasAiKey}
+				<div class="space-y-1.5 rounded border border-[color:var(--color-line-dim)] bg-[color:var(--color-input)] p-3">
+					<label
+						for="seo_ai_instructions"
+						class="eyebrow block text-[10px] text-[color:var(--color-gold-dim)]"
+					>
+						Steer the AI {seoEverGenerated ? '(refinement)' : '(optional)'}
+					</label>
+					<input
+						id="seo_ai_instructions"
+						type="text"
+						bind:value={seoAiInstructions}
+						placeholder={seoEverGenerated
+							? 'e.g. "Mention free shipping in the description", "Shorter title"'
+							: 'Optional steering — e.g. "Lead with the color"'}
+						class="field text-sm"
+						disabled={seoAiBusy}
+					/>
+					<p class="text-[10px] italic text-[color:var(--color-ink-4)]">
+						Type here, then click ✨ {seoEverGenerated ? 'Regenerate' : 'Suggest'} above.
+					</p>
+				</div>
+			{/if}
 		</fieldset>
 
 		<div class="space-y-1.5">
 			<label for="storefront_id" class="eyebrow block">Squarespace storefront</label>
-			{#if data.storefronts.length > 0}
+			{#if data.storefronts.length === 1}
+				<!--
+					Only one store page exists (Dad's site has just "Shop"),
+					so render it as a locked display and submit it via a
+					hidden input — no picker noise. The select branch
+					below still handles the multi-storefront case for
+					future-proofing if Dad ever spins up a second store.
+				-->
+				<input type="hidden" name="storefront_id" value={data.storefronts[0].id} />
+				<div
+					class="field flex items-center justify-between"
+					style="cursor: default; opacity: 0.85"
+				>
+					<span class="text-[color:var(--color-ink-2)]">{data.storefronts[0].title}</span>
+					<span class="font-mono text-[10px] text-[color:var(--color-ink-4)]"
+						>auto-selected (only one)</span
+					>
+				</div>
+			{:else if data.storefronts.length > 1}
 				<select id="storefront_id" name="storefront_id" class="field">
 					<option value="">— pick a store page —</option>
 					{#each data.storefronts as sp (sp.id)}

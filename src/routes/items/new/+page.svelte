@@ -6,12 +6,20 @@
 
 	const currentYear = new Date().getFullYear();
 
+	// AI prefill from the reconcile wizard's "Have it" (null for normal use).
+	const pf = data.reconcile?.prefill ?? null;
+
 	// Form state — attribute inputs react to category changes so only
 	// the slots that mean something for the current category show up.
-	let selectedCategoryId = $state<number | null>(null);
-	let attrValues = $state<string[]>(['', '', '', '', '']);
-	let trackingMode = $state<'serialized' | 'stocked'>('serialized');
-	let stockQty = $state(1);
+	// When prefilled, seed the state from the AI's resolved values.
+	let selectedCategoryId = $state<number | null>(pf?.categoryId ?? null);
+	let attrValues = $state<string[]>(
+		pf?.attrCodes && pf.attrCodes.length === 5 ? [...pf.attrCodes] : ['', '', '', '', '']
+	);
+	let trackingMode = $state<'serialized' | 'stocked'>(pf ? 'stocked' : 'serialized');
+	let stockQty = $state(pf?.qty ?? 1);
+	let condition = $state<string>(pf?.condition ?? '');
+	let brandId = $state<number | string>(pf?.brandId ?? '');
 
 	let activeCategory = $derived(
 		data.categories.find((c) => c.id === selectedCategoryId) ?? null
@@ -55,6 +63,56 @@
 	</header>
 
 	<form method="POST" class="panel space-y-5 px-6 py-6">
+		{#if data.reconcile}
+			<input type="hidden" name="reconcile_group_id" value={data.reconcile.groupId} />
+			<div class="panel px-4 py-3" style="border-color: var(--color-moss-bright)">
+				<p class="text-sm text-[color:var(--color-moss-bright)]">
+					✨ Pre-filled from your marketplace listing(s). Review and adjust, then save — every
+					listing links back to this item automatically.
+				</p>
+				{#if pf?.descriptors}
+					<p class="mt-1 text-[11px] text-[color:var(--color-ink-3)]">AI saw: {pf.descriptors}</p>
+				{/if}
+				{#if data.reconcile.photos.length > 0}
+					<!-- Product graphics carried over from the listings, so Dad
+						 can eyeball the item while filling the form. -->
+					<div class="mt-2 flex flex-wrap items-center gap-2">
+						{#each data.reconcile.photos as ph (ph.image_url)}
+							<a
+								href={ph.url ?? ph.image_url}
+								target="_blank"
+								rel="noopener"
+								title="Open {ph.platform} listing"
+							>
+								<img
+									src={ph.image_url}
+									alt=""
+									class="h-16 w-16 rounded object-cover ring-1 ring-[color:var(--color-line-dim)] transition hover:ring-[color:var(--color-gold-bright)]"
+									loading="lazy"
+								/>
+							</a>
+						{/each}
+						<span class="text-[11px] italic text-[color:var(--color-ink-3)]">
+							↗ Click a photo to open its listing for a closer look
+						</span>
+					</div>
+				{/if}
+
+				<label
+					class="mt-3 flex items-start gap-2 border-t border-[color:var(--color-line-dim)] pt-3 text-[12px] text-[color:var(--color-ink-2)]"
+				>
+					<input type="checkbox" name="make_sellable" class="mt-0.5" />
+					<span>
+						<strong class="text-[color:var(--color-ink)]">Sell it on Squarespace</strong> — mark it
+						sellable and keep its Squarespace listing in sync (price, stock, title, SKU) from now on.
+						If it’s <em>already</em> on Squarespace we publish it right away; if it’s
+						<em>not</em>, you’ll go to its listing page to add photos, write a description, and push
+						it live. Uncheck if you’re only recording stock and not selling it online.
+					</span>
+				</label>
+			</div>
+		{/if}
+
 		<!-- ============= Title ============= -->
 		<div class="space-y-1.5">
 			<label for="title" class="eyebrow block">Title</label>
@@ -63,6 +121,7 @@
 				name="title"
 				type="text"
 				required
+				value={pf?.title ?? ''}
 				placeholder="Seymour Duncan JB Jr pickup, neck position"
 				class="field"
 			/>
@@ -94,7 +153,7 @@
 
 			<div class="space-y-1.5">
 				<label for="condition" class="eyebrow block">Condition</label>
-				<select id="condition" name="condition" required class="field">
+				<select id="condition" name="condition" required bind:value={condition} class="field">
 					<option value="">— pick one —</option>
 					<option value="N">New</option>
 					<option value="U">Used</option>
@@ -115,7 +174,7 @@
 					<span class="lowercase tracking-normal text-[color:var(--color-ink-4)]">(optional)</span>
 				</label>
 				{#if data.brands.length > 0}
-					<select id="brand_id" name="brand_id" class="field">
+					<select id="brand_id" name="brand_id" bind:value={brandId} class="field">
 						<option value="">— none —</option>
 						{#each data.brands as brand (brand.id)}
 							<option value={brand.id}>{brand.code} · {brand.name}</option>
@@ -127,6 +186,7 @@
 						name="brand_code"
 						type="text"
 						maxlength="3"
+						value={pf?.brandCode ?? ''}
 						placeholder="FEN"
 						class="field font-mono uppercase"
 					/>
@@ -143,6 +203,7 @@
 					name="model"
 					type="text"
 					required
+					value={pf?.model ?? ''}
 					placeholder="STR"
 					class="field font-mono uppercase"
 				/>
@@ -274,7 +335,16 @@
 				<label for="price" class="eyebrow block">
 					Price <span class="lowercase tracking-normal text-[color:var(--color-ink-4)]">($)</span>
 				</label>
-				<input id="price" name="price" type="number" step="0.01" min="0" placeholder="0.00" class="field" />
+				<input
+					id="price"
+					name="price"
+					type="number"
+					step="0.01"
+					min="0"
+					value={pf?.priceCents != null ? (pf.priceCents / 100).toFixed(2) : ''}
+					placeholder="0.00"
+					class="field"
+				/>
 			</div>
 		</div>
 
@@ -284,7 +354,8 @@
 				Description
 				<span class="lowercase tracking-normal text-[color:var(--color-ink-4)]">(optional)</span>
 			</label>
-			<textarea id="description" name="description" rows="3" class="field"></textarea>
+			<textarea id="description" name="description" rows="3" class="field" value={pf?.description ?? ''}
+			></textarea>
 		</div>
 
 		<div class="flex gap-2 border-t border-[color:var(--color-line-dim)] pt-5">

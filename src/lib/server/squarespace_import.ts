@@ -31,10 +31,13 @@ import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import {
 	listProducts,
 	listInventory,
+	getProduct,
 	type SquarespaceProduct,
 	type SquarespaceVariant
 } from './squarespace';
 import { generateSku, normaliseModelCode } from './sku';
+import { getListingPhotoUrls } from './reverb';
+import { getItemImageUrls, type EbayEnvCreds } from './ebay';
 
 /**
  * Resolve the stock_qty we should record for a given Squarespace
@@ -377,12 +380,22 @@ async function importPhoto(
 	// though they'd be fine via the API. Browser-shaped headers pass.
 	// The newer images.squarespace-cdn.com host doesn't care, so this
 	// is harmless for it too.
+	//
+	// Accept header is INTENTIONALLY narrowed to JPEG/PNG/GIF (no
+	// WebP, no AVIF). SS's image CDN does content negotiation — if
+	// we advertise WebP, it serves WebP, and we end up storing a
+	// format SS's own upload endpoint won't accept on the way back
+	// out. By asking for the classic three formats here we keep R2
+	// stocked with formats that round-trip cleanly. (The SS push
+	// path also runs Photon transcoding as a safety net for any
+	// pre-existing WebPs in R2 — but starving the inflow is the
+	// cheaper long-term fix.)
 	const res = await fetch(url, {
 		headers: {
 			'User-Agent':
 				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
 				'(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-			Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+			Accept: 'image/jpeg,image/png,image/gif',
 			Referer: 'https://www.squarespace.com/'
 		}
 	});
@@ -405,6 +418,208 @@ async function importPhoto(
 		)
 		.bind(itemId, r2Key, url, position, altText ?? null, buf.byteLength, contentType)
 		.run();
+}
+
+/**
+ * Pull an item's photos from its linked Squarespace product into R2 +
+ * item_photo. The reconcile wizard ONBOARD only links the listing — it
+ * doesn't copy images — so a freshly-onboarded item shows no photos locally
+ * even though the live product has them. This fetches the product's images
+ * and stores any we don't already have.
+ *
+ * Idempotent (skips images already stored, matched by source URL); no-ops
+ * when the item has no Squarespace link or the product is gone. Best-effort
+ * and bounded by `max` so it stays inside the Worker subrequest budget
+ * (~2 subrequests per photo) — re-run, or use the catalog backfill, to
+ * finish a product with more images than `max`. Returns photos added.
+ */
+export interface PhotoPullResult {
+	added: number; // photos newly stored in R2 + item_photo
+	found: number; // images the Squarespace product reported
+	firstError: string | null; // first per-image download failure, for diagnostics
+}
+
+export async function importItemPhotosFromSquarespace(
+	db: D1Database,
+	r2: R2Bucket,
+	apiKey: string,
+	itemId: number,
+	max = 10
+): Promise<PhotoPullResult> {
+	const link = await db
+		.prepare(
+			`SELECT external_id FROM marketplace_listing
+			 WHERE item_id = ? AND platform = 'squarespace' AND external_id IS NOT NULL`
+		)
+		.bind(itemId)
+		.first<{ external_id: string }>();
+	if (!link?.external_id) return { added: 0, found: 0, firstError: null };
+
+	// Let a Squarespace fetch error PROPAGATE. The auto-sync callers wrap this
+	// in try/catch (best-effort), while the per-item "Pull photos" button
+	// surfaces the real error so we're never guessing why nothing came down.
+	const product = await getProduct(apiKey, link.external_id);
+	const images = product.images ?? [];
+	if (images.length === 0) return { added: 0, found: 0, firstError: null };
+
+	// Skip images we've already stored (idempotent across re-runs).
+	const { results: existing } = await db
+		.prepare(`SELECT source_url FROM item_photo WHERE item_id = ?`)
+		.bind(itemId)
+		.all<{ source_url: string | null }>();
+	const have = new Set(existing.map((r) => r.source_url).filter(Boolean) as string[]);
+
+	// Append after any photos already on the item.
+	const posRow = await db
+		.prepare(`SELECT COALESCE(MAX(position), -1) AS p FROM item_photo WHERE item_id = ?`)
+		.bind(itemId)
+		.first<{ p: number }>();
+	let position = (posRow?.p ?? -1) + 1;
+
+	let added = 0;
+	let firstError: string | null = null;
+	for (const img of images) {
+		if (added >= max) break;
+		if (!isUsablePhotoUrl(img.url) || have.has(img.url)) continue;
+		try {
+			await importPhoto(db, r2, itemId, img.url, img.id, position, img.altText);
+			position++;
+			added++;
+		} catch (e) {
+			if (!firstError) {
+				firstError = `${(img.url ?? '').slice(0, 90)} → ${e instanceof Error ? e.message : String(e)}`;
+			}
+		}
+	}
+	return { added, found: images.length, firstError };
+}
+
+export interface PhotoSourceCreds {
+	ssKey?: string;
+	reverbKey?: string;
+	ebayCreds?: EbayEnvCreds;
+}
+
+export interface AnySourcePullResult {
+	added: number;
+	found: number;
+	source: string | null; // which platform the photos came from
+	firstError: string | null;
+	attempts: string[]; // per-source outcome, for diagnostics
+}
+
+/**
+ * Pull an item's photos from whichever marketplace it's actually linked to —
+ * tries Squarespace → Reverb → eBay (richest first), then falls back to the
+ * primary images captured during the reconcile scrape. This is the
+ * "Pull photos from source" path: items that live ONLY on Reverb/eBay (moved
+ * into stock during reconciliation) still get template images.
+ *
+ * Stops at the first source that successfully imports a photo; if a source
+ * errors or comes back empty it moves on to the next. Idempotent (skips
+ * images already stored by URL), bounded by `max`, and never throws.
+ */
+export async function importItemPhotosFromAnySource(
+	db: D1Database,
+	r2: R2Bucket,
+	creds: PhotoSourceCreds,
+	itemId: number,
+	max = 12
+): Promise<AnySourcePullResult> {
+	const { results: links } = await db
+		.prepare(
+			`SELECT platform, external_id, external_variant_id
+			 FROM marketplace_listing WHERE item_id = ?`
+		)
+		.bind(itemId)
+		.all<{ platform: string; external_id: string | null; external_variant_id: string | null }>();
+	const ssId = links.find((l) => l.platform === 'squarespace')?.external_id ?? null;
+	const reverbId = links.find((l) => l.platform === 'reverb')?.external_id ?? null;
+	const ebayRow = links.find((l) => l.platform === 'ebay');
+	const ebayId = ebayRow?.external_variant_id ?? ebayRow?.external_id ?? null;
+
+	// Ordered candidate sources — each lazily fetches its public image URLs.
+	const sources: { name: string; get: () => Promise<string[]> }[] = [];
+	if (creds.ssKey && ssId) {
+		const ssKey = creds.ssKey;
+		sources.push({
+			name: 'Squarespace',
+			get: async () => {
+				const p = await getProduct(ssKey, ssId);
+				return (p.images ?? []).map((im) => im.url).filter((u): u is string => !!u);
+			}
+		});
+	}
+	if (creds.reverbKey && reverbId) {
+		const reverbKey = creds.reverbKey;
+		sources.push({ name: 'Reverb', get: () => getListingPhotoUrls(reverbKey, reverbId) });
+	}
+	if (creds.ebayCreds && ebayId) {
+		const ebayCreds = creds.ebayCreds;
+		sources.push({ name: 'eBay', get: () => getItemImageUrls(ebayCreds, ebayId) });
+	}
+	// Last resort: primary images captured during the reconcile scrape.
+	sources.push({
+		name: 'scrape',
+		get: async () => {
+			const { results } = await db
+				.prepare(
+					`SELECT rl.image_url FROM reconcile_listing rl
+					 JOIN reconcile_group rg ON rg.id = rl.group_id
+					 WHERE rg.item_id = ? AND rl.image_url IS NOT NULL`
+				)
+				.bind(itemId)
+				.all<{ image_url: string }>();
+			return results.map((r) => r.image_url).filter((u): u is string => !!u);
+		}
+	});
+
+	const { results: existing } = await db
+		.prepare(`SELECT source_url FROM item_photo WHERE item_id = ?`)
+		.bind(itemId)
+		.all<{ source_url: string | null }>();
+	const have = new Set(existing.map((r) => r.source_url).filter(Boolean) as string[]);
+
+	const posRow = await db
+		.prepare(`SELECT COALESCE(MAX(position), -1) AS p FROM item_photo WHERE item_id = ?`)
+		.bind(itemId)
+		.first<{ p: number }>();
+	let position = (posRow?.p ?? -1) + 1;
+
+	let firstError: string | null = null;
+	const attempts: string[] = [];
+	for (const src of sources) {
+		let urls: string[];
+		try {
+			urls = await src.get();
+		} catch (e) {
+			const m = e instanceof Error ? e.message : String(e);
+			attempts.push(`${src.name}: error (${m.slice(0, 40)})`);
+			if (!firstError) firstError = `${src.name}: ${m}`;
+			continue;
+		}
+		const fresh = urls.filter((u) => isUsablePhotoUrl(u) && !have.has(u));
+		if (fresh.length === 0) {
+			attempts.push(`${src.name}: ${urls.length} found, 0 new`);
+			continue;
+		}
+		let added = 0;
+		for (const u of fresh) {
+			if (added >= max) break;
+			try {
+				await importPhoto(db, r2, itemId, u, `${src.name.toLowerCase()}-${position}`, position, undefined);
+				position++;
+				added++;
+			} catch (e) {
+				if (!firstError) {
+					firstError = `${src.name} image: ${e instanceof Error ? e.message : String(e)}`;
+				}
+			}
+		}
+		attempts.push(`${src.name}: +${added} of ${urls.length}`);
+		if (added > 0) return { added, found: urls.length, source: src.name, firstError, attempts };
+	}
+	return { added: 0, found: 0, source: null, firstError, attempts };
 }
 
 // ---------- small helpers ----------

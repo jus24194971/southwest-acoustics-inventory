@@ -1,0 +1,53 @@
+Subject: I taught your computer to do your least favorite chore 🎸🤖
+
+Hey Dad,
+
+So. You've been happily clicking around in the inventory app, blissfully
+unaware that I snuck in and built you something you absolutely did not ask
+for and will absolutely love.
+
+You know how the same guitars and parts are scattered across Squarespace,
+Reverb, and eBay like a yard sale that got out of hand? And how matching
+them all up by hand sounds like a special kind of punishment? Yeah. I
+built a robot for that. It's called Reconcile.
+
+Here's what it does while you sip your coffee and judge it:
+
+  - It goes out and SCRAPES every listing you have on all three sites.
+    All of them. Yes, even that one.
+  - Then it uses AI to MATCH the same product across stores — so your
+    "1962 Strat" on eBay and your "Vintage Strat (Sunburst!!)" on Reverb
+    finally get introduced and realize they're the same guitar.
+  - Then it walks you through them one at a time so you just go "yep,
+    have it / nope, gone / that's actually a Tele, you absolute machine,"
+    and it builds one clean inventory item out of the mess.
+
+Your homework (it's easy, I designed it for you specifically):
+
+  1. Listings → Reconcile.
+  2. Paste your eBay store link, hit Scrape.
+  3. Match with AI. Glance at the cards. If it pairs up two different
+     things, smack "detach" and tell it why — it learns, unlike some
+     people.
+  4. Review wizard. Go one card at a time, coffee in hand.
+  5. Anything you kill lands on the Dead Listings page — hit Remove and
+     it yanks them off Squarespace and Reverb for you. (eBay makes you do
+     it by hand, because eBay is eBay.)
+
+Two promises so you'll relax:
+
+  - It does NOT take anything down off a live store until you personally
+    click Remove. Mash buttons fearlessly.
+  - It gets Tele-vs-Strat right because I specifically threatened it.
+
+Text me when you get the first one matched up clean across all three. I
+want to watch you become a believer.
+
+Love,
+Justin
+
+P.S. You didn't ask for this. That's the best part.
+
+----------------------------------------------------------------------
+Your link:  [ paste the app URL here before sending ]
+Guide:      Reconcile-Round-Up.pdf  (attached)

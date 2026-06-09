@@ -46,6 +46,17 @@ export interface SquarespaceImage {
 	altText?: string;
 }
 
+/** SEO override fields stored on a product. SS calls this `seoOptions`
+ *  in GET responses and `seoData` in some update-product docs — it's
+ *  the same shape, just different keys. We send BOTH on writes to
+ *  avoid betting on the wrong one (extra unknown keys are ignored).
+ *  When unset, SS auto-derives the page title and meta description
+ *  from the product's own name + description. */
+export interface SquarespaceSeoOptions {
+	title?: string;
+	description?: string;
+}
+
 export interface SquarespaceProduct {
 	id: string;
 	type: string; // "PHYSICAL" | "DIGITAL" | "SERVICE" | "GIFT_CARD"
@@ -61,6 +72,9 @@ export interface SquarespaceProduct {
 	isVisible: boolean;
 	variants: SquarespaceVariant[];
 	images: SquarespaceImage[];
+	/** Per-product SEO override. `null` (NOT undefined) when unset on
+	 *  the SS side — the API explicitly returns the field with null. */
+	seoOptions?: SquarespaceSeoOptions | null;
 	createdOn: string;
 	modifiedOn: string;
 }
@@ -110,6 +124,84 @@ export async function listProducts(
 	return JSON.parse(body) as SquarespaceListResponse<SquarespaceProduct>;
 }
 
+/**
+ * Find an existing product on Squarespace by one of its variant SKUs.
+ *
+ * We stamp our internal item SKU onto the variant of every product we
+ * create, and SKUs are unique per item in our DB — so a SKU match
+ * reliably identifies a product WE created, even when the local
+ * external_id link was lost. (That happens when a push crashed before
+ * saving the id — e.g. the old in-Worker photo transcode hitting the
+ * resource limit — leaving an "orphan" product on SS.) The push path
+ * uses this to ADOPT the orphan and update it in place instead of
+ * creating yet another duplicate.
+ *
+ * Matching on the SKU (not the slug) is the safe choice: the read-side
+ * `urlSlug` carries a `p/` prefix the write side doesn't, and a wrong
+ * slug match could clobber an unrelated product. A SKU is ours and exact.
+ *
+ * The Products API has no server-side SKU filter, so we page through.
+ * `maxPages` caps the scan to stay well under the Worker subrequest
+ * budget — for Dad's small store this is a page or two. Returns the
+ * FIRST matching product (+ its variant id), or null if none found
+ * within the scan window.
+ */
+export async function findProductBySku(
+	apiKey: string,
+	sku: string,
+	maxPages = 15
+): Promise<{ product: SquarespaceProduct; variantId: string | null } | null> {
+	const target = sku.trim().toLowerCase();
+	if (!target) return null;
+
+	let cursor: string | undefined;
+	for (let page = 0; page < maxPages; page++) {
+		const resp = await listProducts(apiKey, cursor ? { cursor } : {});
+		for (const product of resp.products ?? []) {
+			const variant = product.variants?.find(
+				(v) => (v.sku ?? '').trim().toLowerCase() === target
+			);
+			if (variant) return { product, variantId: variant.id };
+		}
+		if (!resp.pagination?.hasNextPage || !resp.pagination.nextPageCursor) break;
+		cursor = resp.pagination.nextPageCursor;
+	}
+	return null;
+}
+
+/**
+ * Find a product by its URL slug. Used when a create 409s with
+ * URL_SLUG_UNAVAILABLE: the slug being taken means the product already
+ * exists, so we ADOPT the owner instead of creating a suffixed
+ * duplicate. (This is the safety net for products that carry a different
+ * SKU than ours — Dad's original listings — which findProductBySku
+ * can't match.)
+ *
+ * The read-side urlSlug can include a "p/" path prefix while the slug we
+ * send on create doesn't, so we compare the last path segment.
+ */
+export async function findProductBySlug(
+	apiKey: string,
+	slug: string,
+	maxPages = 15
+): Promise<SquarespaceProduct | null> {
+	const lastSeg = (s: string | null | undefined) =>
+		(s ?? '').split('/').filter(Boolean).pop()?.toLowerCase() ?? '';
+	const target = lastSeg(slug);
+	if (!target) return null;
+
+	let cursor: string | undefined;
+	for (let page = 0; page < maxPages; page++) {
+		const resp = await listProducts(apiKey, cursor ? { cursor } : {});
+		for (const product of resp.products ?? []) {
+			if (lastSeg(product.urlSlug) === target) return product;
+		}
+		if (!resp.pagination?.hasNextPage || !resp.pagination.nextPageCursor) break;
+		cursor = resp.pagination.nextPageCursor;
+	}
+	return null;
+}
+
 // =====================================================================
 // Inventory API.
 //
@@ -152,6 +244,69 @@ export async function listInventory(
 	const body = await res.text();
 	if (!res.ok) throw new SquarespaceError(res.status, body);
 	return JSON.parse(body) as InventoryListResponse;
+}
+
+// =====================================================================
+// Orders API — for pulling SOLD metrics back into inventory.
+//
+// When a product sells on the storefront, it shows up as an order line
+// item here. We match line items to our items by SKU, then write a
+// 'sale' movement + decrement on-hand. Requires the **Orders** read
+// scope on the API key.
+//
+// Docs: https://developers.squarespace.com/commerce-apis/orders-api-overview
+// =====================================================================
+
+export interface SquarespaceOrderLineItem {
+	id?: string;
+	variantId?: string;
+	sku?: string;
+	productId?: string;
+	productName?: string;
+	quantity: number;
+	unitPricePaid?: Money;
+}
+
+export interface SquarespaceOrder {
+	id: string;
+	orderNumber?: string;
+	createdOn: string;
+	modifiedOn?: string;
+	fulfillmentStatus?: string; // PENDING | FULFILLED | CANCELED
+	lineItems: SquarespaceOrderLineItem[];
+}
+
+interface OrdersListResponse {
+	result: SquarespaceOrder[];
+	pagination: {
+		hasNextPage: boolean;
+		nextPageCursor?: string;
+		nextPageUrl?: string;
+	};
+}
+
+/**
+ * Fetch one page of orders. SS requires `modifiedAfter` + `modifiedBefore`
+ * together (ISO 8601) when filtering by time, OR a `cursor` for the next
+ * page — never both. We page through everything in the window at the
+ * call site.
+ */
+export async function listOrders(
+	apiKey: string,
+	options: { modifiedAfter?: string; modifiedBefore?: string; cursor?: string } = {}
+): Promise<OrdersListResponse> {
+	const url = new URL(`${BASE_URL}/commerce/orders`);
+	if (options.cursor) {
+		url.searchParams.set('cursor', options.cursor);
+	} else if (options.modifiedAfter && options.modifiedBefore) {
+		url.searchParams.set('modifiedAfter', options.modifiedAfter);
+		url.searchParams.set('modifiedBefore', options.modifiedBefore);
+	}
+
+	const res = await fetch(url.toString(), { headers: authHeaders(apiKey) });
+	const body = await res.text();
+	if (!res.ok) throw new SquarespaceError(res.status, body);
+	return JSON.parse(body) as OrdersListResponse;
 }
 
 // =====================================================================
@@ -211,6 +366,19 @@ export interface SquarespaceProductWritePayload {
 	 * SS admin shows (or it'll create a new category with that name).
 	 */
 	categories?: string[];
+	/**
+	 * NOT SENT on writes — kept here only for future-proofing if SS
+	 * ever opens this on the public API. Both candidate field names
+	 * we tried (`seoData` and `seoOptions`) are rejected with HTTP 400
+	 * "unknown or readonly fields". Same admin-UI-only restriction as
+	 * `categories` and Fulfillment Profile.
+	 *
+	 * SS does RETURN the field as `seoOptions` on product GETs, so
+	 * we still parse it on reads via the `SquarespaceProduct` type
+	 * (which has the `seoOptions` field) and round-trip Dad's
+	 * admin-UI-set SEO back to our local copy via the Pull action.
+	 */
+	seoData?: SquarespaceSeoOptions;
 	isVisible?: boolean;
 	variants: Array<{
 		sku: string;
@@ -288,14 +456,194 @@ export async function updateProduct(
 	productId: string,
 	payload: Partial<SquarespaceProductWritePayload>
 ): Promise<SquarespaceProduct> {
-	const res = await fetch(`${BASE_URL}/commerce/products/${encodeURIComponent(productId)}`, {
-		method: 'PUT',
+	// Updating a product is POST /v2/commerce/products/{id} — NOT PUT, and
+	// NOT the legacy 1.0 base. (1.0 create still works, but 1.0 has no
+	// PUT-update, which is what produced the HTTP 405.) v2 supports partial
+	// updates of PRODUCT-LEVEL fields only.
+	// Ref: https://developers.squarespace.com/commerce-apis/update-product
+	//
+	// v2 rejects create-only / read-only fields with "unknown or readonly
+	// fields: [...]". Strip them: `type` + `storePageId` are immutable, and
+	// `variants` are NOT part of the product-update body in v2 — variant
+	// price lives on POST .../variants/{id} and stock on the Inventory API
+	// (see updateProductVariant / setVariantStock / updateProductFull).
+	const updatable: Partial<SquarespaceProductWritePayload> = { ...payload };
+	delete updatable.type;
+	delete updatable.storePageId;
+	delete updatable.variants;
+	// Don't re-send the slug on updates. It's set at create and a stable
+	// URL is what we want; re-sending it on every push is the source of
+	// slug conflicts/errors on existing products. (Renaming a slug, if ever
+	// needed, would be a deliberate separate action.)
+	delete updatable.urlSlug;
+	const res = await fetch(`${V2_BASE_URL}/commerce/products/${encodeURIComponent(productId)}`, {
+		method: 'POST',
 		headers: { ...authHeaders(apiKey), 'content-type': 'application/json' },
-		body: JSON.stringify(payload)
+		body: JSON.stringify(updatable)
 	});
 	const body = await res.text();
 	if (!res.ok) throw new SquarespaceError(res.status, body);
 	return JSON.parse(body) as SquarespaceProduct;
+}
+
+/**
+ * Update a single variant's PRICE (v2). Stock is NOT here — see
+ * setVariantStock. POST /v2/commerce/products/{productId}/variants/{id}.
+ */
+export async function updateProductVariant(
+	apiKey: string,
+	productId: string,
+	variantId: string,
+	payload: { pricing?: { basePrice: Money; onSale?: boolean; salePrice?: Money }; sku?: string }
+): Promise<void> {
+	const res = await fetch(
+		`${V2_BASE_URL}/commerce/products/${encodeURIComponent(productId)}/variants/${encodeURIComponent(variantId)}`,
+		{
+			method: 'POST',
+			headers: { ...authHeaders(apiKey), 'content-type': 'application/json' },
+			body: JSON.stringify(payload)
+		}
+	);
+	if (res.ok) return;
+	throw new SquarespaceError(res.status, await res.text());
+}
+
+/**
+ * Set a variant's ABSOLUTE on-hand quantity via the Inventory API.
+ * POST /1.0/commerce/inventory/adjustments with `setFiniteOperations`.
+ * The SS variant id IS the inventory item id. Requires the Inventory
+ * write scope on the API key.
+ * Ref: https://developers.squarespace.com/commerce-apis/adjust-stock-quantities
+ */
+export async function setVariantStock(
+	apiKey: string,
+	variantId: string,
+	quantity: number
+): Promise<void> {
+	const res = await fetch(`${BASE_URL}/commerce/inventory/adjustments`, {
+		method: 'POST',
+		headers: {
+			...authHeaders(apiKey),
+			'content-type': 'application/json',
+			// Inventory writes REQUIRE a unique Idempotency-Key — without it
+			// SS rejects with a bare 400 (no body). One fresh UUID per call
+			// is correct here: each stock-set is its own intended action.
+			'Idempotency-Key': crypto.randomUUID()
+		},
+		body: JSON.stringify({
+			setFiniteOperations: [{ variantId, quantity: Math.max(0, Math.round(quantity)) }]
+		})
+	});
+	if (res.ok) return;
+	throw new SquarespaceError(res.status, await res.text());
+}
+
+/**
+ * High-level "update this listing" for v2 — orchestrates the three calls
+ * the old 1.0 single-payload update used to do in one shot:
+ *   1. product-level fields  (name/description/slug/tags/visibility)
+ *   2. variant price         (if the payload carries a variant price)
+ *   3. variant stock         (if the payload carries a finite stock qty)
+ *
+ * Callers keep handing us the familiar create-style payload (with a
+ * variants[0]) and this fans it out to the right v2 endpoints. Returns
+ * the fresh product (with variant ids + url) for the caller's bookkeeping.
+ */
+export async function updateProductFull(
+	apiKey: string,
+	productId: string,
+	payload: Partial<SquarespaceProductWritePayload>
+): Promise<SquarespaceProduct> {
+	// Each step is labeled so a failure tells us EXACTLY which v2 call
+	// rejected it (product / variant price / stock) + the response body,
+	// instead of an ambiguous "HTTP 400".
+	// 1. Product-level fields (updateProduct strips type/storePageId/variants).
+	await labelStep('product fields', () => updateProduct(apiKey, productId, payload));
+
+	// Re-fetch for the authoritative variant ids + complete product object.
+	const product = await getProduct(apiKey, productId);
+	const want = payload.variants?.[0];
+	if (want) {
+		const variant =
+			(want.sku ? product.variants?.find((v) => v.sku === want.sku) : undefined) ??
+			product.variants?.[0];
+		const vid = variant?.id;
+		if (vid) {
+			// 2. Price + SKU (both live on the variant).
+			if (want.pricing?.basePrice || want.sku) {
+				const variantPayload: {
+					pricing?: { basePrice: Money; onSale?: boolean; salePrice?: Money };
+					sku?: string;
+				} = {};
+				if (want.pricing?.basePrice) {
+					const newBase = want.pricing.basePrice;
+					// Squarespace rejects a base price that's BELOW an active sale
+					// price ("sale price is greater than the base price"). If our
+					// new base undercuts an existing sale, clear the sale so the
+					// update succeeds; otherwise leave any still-valid sale alone.
+					const live = variant?.pricing;
+					const baseVal = parseFloat(newBase.value);
+					const saleVal = live?.salePrice ? parseFloat(live.salePrice.value) : NaN;
+					variantPayload.pricing =
+						live?.onSale && Number.isFinite(saleVal) && saleVal > baseVal
+							? { basePrice: newBase, onSale: false }
+							: { basePrice: newBase };
+				}
+				if (want.sku) variantPayload.sku = want.sku;
+				await labelStep('variant price', () =>
+					updateProductVariant(apiKey, productId, vid, variantPayload)
+				);
+			}
+			// 3. Stock (absolute), unless the variant is unlimited. Stock is
+			// best-effort: content + price already updated, so a stock-only
+			// hiccup must NOT fail the whole push. Logged for follow-up.
+			if (want.stock && !want.stock.unlimited && typeof want.stock.quantity === 'number') {
+				const qty = want.stock.quantity;
+				try {
+					await labelStep('stock', () => setVariantStock(apiKey, vid, qty));
+				} catch (stockErr) {
+					console.error('Squarespace stock sync failed (non-fatal):', stockErr);
+				}
+			}
+		}
+	}
+	return product;
+}
+
+/** Run a v2 update step; on a Squarespace error, rethrow with the step
+ *  name baked into the body so the recorded push error says which call
+ *  failed (e.g. "[variant price] …"). */
+async function labelStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
+	try {
+		return await fn();
+	} catch (err) {
+		if (err instanceof SquarespaceError) {
+			throw new SquarespaceError(err.httpStatus, `[${label}] ${err.body || '(no response body)'}`);
+		}
+		throw err;
+	}
+}
+
+/**
+ * Permanently delete a product from Squarespace.
+ *
+ * Used by (a) the retire-an-item auto-sync (sellable items pull their
+ * listing when discontinued) and (b) the duplicate-cleanup tool. SS
+ * returns 204 No Content on success and 404 if the product is already
+ * gone — we treat 404 as success (idempotent: the end state is "not on
+ * SS" either way) so a double-click or a stale id doesn't error.
+ *
+ * This is irreversible on SS's side — the product, its URL, and any
+ * reviews are gone. Callers gate it behind an explicit user action.
+ */
+export async function deleteProduct(apiKey: string, productId: string): Promise<void> {
+	const res = await fetch(`${BASE_URL}/commerce/products/${encodeURIComponent(productId)}`, {
+		method: 'DELETE',
+		headers: authHeaders(apiKey)
+	});
+	if (res.ok || res.status === 404) return;
+	const body = await res.text();
+	throw new SquarespaceError(res.status, body);
 }
 
 /**
@@ -326,6 +674,76 @@ export async function updateProduct(
  */
 const V2_BASE_URL = 'https://api.squarespace.com/v2';
 
+/**
+ * Image formats Squarespace's upload endpoint will accept. WebP and
+ * AVIF are explicitly NOT on this list — sending either returns
+ * HTTP 400 "The provided file could not be read as an image". We
+ * transcode anything outside this set to JPEG before upload.
+ *
+ * Source: https://support.squarespace.com/hc/en-us/articles/206542547
+ * (also discoverable via trial-and-error — see the 400 contextId in
+ * git history).
+ */
+const SS_ACCEPTED_IMAGE_TYPES = new Set([
+	'image/jpeg',
+	'image/jpg',
+	'image/pjpeg',
+	'image/png',
+	'image/gif'
+]);
+
+/**
+ * Lazy WASM module loader for Photon. Imported on first use so the
+ * ~500 KB WASM module isn't paid for on cold starts that don't push
+ * photos (most page loads). Cached at module scope after first call.
+ */
+let _photonModule: Promise<typeof import('@cf-wasm/photon')> | null = null;
+function loadPhoton(): Promise<typeof import('@cf-wasm/photon')> {
+	if (!_photonModule) _photonModule = import('@cf-wasm/photon');
+	return _photonModule;
+}
+
+/**
+ * If `contentType` is outside SS_ACCEPTED_IMAGE_TYPES, decode the
+ * source bytes via Photon and re-encode as JPEG. Returns the
+ * (possibly-transcoded) bytes + the new content type + the filename
+ * with a `.jpg` extension. The PhotonImage handle is `.free()`'d
+ * eagerly — Workers' WASM heap is shared with JS, leaking adds up
+ * across batches.
+ *
+ * Quality 85 strikes the usual balance for product photography
+ * (visually indistinguishable from the source for most cameras,
+ * ~3-5× smaller than q100).
+ */
+async function normalizeForSquarespace(
+	bytes: ArrayBuffer,
+	contentType: string,
+	filename: string
+): Promise<{ bytes: ArrayBuffer; contentType: string; filename: string }> {
+	const ct = contentType.toLowerCase();
+	if (SS_ACCEPTED_IMAGE_TYPES.has(ct)) {
+		return { bytes, contentType, filename };
+	}
+
+	const { PhotonImage } = await loadPhoton();
+	let img: InstanceType<typeof PhotonImage> | null = null;
+	try {
+		img = PhotonImage.new_from_byteslice(new Uint8Array(bytes));
+		const jpegBytes = img.get_bytes_jpeg(85);
+		// jpegBytes is a Uint8Array — copy into a fresh ArrayBuffer so
+		// the caller gets a contiguous, non-shared buffer regardless of
+		// what Photon's WASM allocator returned. (Photon's underlying
+		// buffer may be a SharedArrayBuffer or larger than the view —
+		// .slice() on a Uint8Array returns a Uint8Array, whose .buffer
+		// is a fresh ArrayBuffer.)
+		const out = jpegBytes.slice().buffer;
+		const newFilename = filename.replace(/\.[^./\\]+$/, '') + '.jpg';
+		return { bytes: out, contentType: 'image/jpeg', filename: newFilename };
+	} finally {
+		img?.free();
+	}
+}
+
 export async function uploadProductImage(
 	apiKey: string,
 	productId: string,
@@ -333,10 +751,20 @@ export async function uploadProductImage(
 	contentType: string,
 	filename: string
 ): Promise<{ imageId?: string; status?: string }> {
+	// Transcode WebP / AVIF / anything-not-on-SS's-list into JPEG
+	// before posting. Photos imported from SS CDN are often WebP
+	// (SS serves WebP via content negotiation when the import fetch
+	// advertises support) and SS's own upload endpoint refuses them.
+	const normalized = await normalizeForSquarespace(imageBytes, contentType, filename);
+
 	const url = `${V2_BASE_URL}/commerce/products/${encodeURIComponent(productId)}/images`;
 
 	const form = new FormData();
-	form.append('file', new Blob([imageBytes], { type: contentType }), filename);
+	form.append(
+		'file',
+		new Blob([normalized.bytes], { type: normalized.contentType }),
+		normalized.filename
+	);
 
 	const res = await fetch(url, {
 		method: 'POST',

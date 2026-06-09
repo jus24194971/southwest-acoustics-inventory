@@ -2,6 +2,30 @@ import type { Actions, PageServerLoad } from './$types';
 import { fail, redirect } from '@sveltejs/kit';
 import { getDB } from '$lib/server/db';
 import { generateSku, isCondition, normaliseAttr, ATTR_UNIQUE } from '$lib/server/sku';
+import { adoptGroupListings } from '$lib/server/reconcile';
+import { publishItemAsSellable } from '$lib/server/ss_auto_sync';
+import { importItemPhotosFromAnySource } from '$lib/server/squarespace_import';
+import { resolveEbayCreds } from '$lib/server/ebay_credentials';
+
+/** Resolved prefill the reconcile wizard stashes on a group before
+ *  handing off to this form. Mirrors GroupPrefill + qty/decision. */
+interface ReconcilePrefill {
+	title?: string;
+	description?: string;
+	categoryId?: number | null;
+	categoryLabel?: string | null;
+	brandId?: number | null;
+	brandCode?: string | null;
+	brandName?: string | null;
+	model?: string;
+	condition?: 'N' | 'U' | 'R' | 'B';
+	priceCents?: number | null;
+	attrCodes?: string[];
+	attrLabels?: string[];
+	descriptors?: string;
+	qty?: number;
+	decision?: 'have' | 'future';
+}
 
 /**
  * New-item form.
@@ -88,11 +112,45 @@ export const load: PageServerLoad = async (event) => {
 		)
 	]);
 
+	// When the reconcile wizard sends us here ("Have it"), load the AI
+	// prefill it stashed on the group + the listing photos so the form
+	// arrives populated AND shows the product graphics.
+	let reconcile: {
+		groupId: number;
+		prefill: ReconcilePrefill;
+		photos: Array<{ platform: string; image_url: string; url: string | null }>;
+	} | null = null;
+	const rg = event.url.searchParams.get('reconcile_group');
+	if (rg && /^\d+$/.test(rg)) {
+		const groupId = parseInt(rg, 10);
+		const row = await db
+			.prepare(`SELECT prefill_json FROM reconcile_group WHERE id = ?`)
+			.bind(groupId)
+			.first<{ prefill_json: string | null }>();
+		if (row?.prefill_json) {
+			try {
+				const prefill = JSON.parse(row.prefill_json) as ReconcilePrefill;
+				const { results: photos } = await db
+					.prepare(
+						`SELECT platform, image_url, url FROM reconcile_listing
+						 WHERE group_id = ? AND image_url IS NOT NULL
+						 ORDER BY platform, id`
+					)
+					.bind(groupId)
+					.all<{ platform: string; image_url: string; url: string | null }>();
+				reconcile = { groupId, prefill, photos };
+			} catch {
+				reconcile = null;
+			}
+		}
+	}
+
 	return {
 		categories: categories.results as CategoryRow[],
 		brands: brands.results as Array<{ id: number; code: string; name: string }>,
 		bins: bins.results as Array<{ id: number; bin_code: string; depth: number; path: string }>,
-		attrValues: attrValues.results as AttributeValueRow[]
+		attrValues: attrValues.results as AttributeValueRow[],
+		reconcile
 	};
 };
 
@@ -102,7 +160,9 @@ export const actions: Actions = {
 		const form = await event.request.formData();
 
 		const title = (form.get('title') ?? '').toString().trim();
-		const description = (form.get('description') ?? '').toString().trim() || null;
+		// For now: if no description was given, copy the title into it so the
+		// item is never blank (a baseline; can be refined later).
+		const description = (form.get('description') ?? '').toString().trim() || title || null;
 		const categoryIdRaw = form.get('category_id')?.toString();
 		const brandIdRaw = form.get('brand_id')?.toString();
 		const brandCodeRaw = form.get('brand_code')?.toString().trim();
@@ -261,6 +321,81 @@ export const actions: Actions = {
 				event.locals?.userEmail ?? 'system'
 			)
 			.run();
+
+		// Reconcile onboarding: if we arrived from the wizard's "Have it",
+		// link every platform listing in the group to this new item (with
+		// the correct external ids + URLs) and mark the group resolved, then
+		// return to the wizard for the next product.
+		const reconcileGroupRaw = form.get('reconcile_group_id')?.toString();
+		if (reconcileGroupRaw && /^\d+$/.test(reconcileGroupRaw)) {
+			const groupId = parseInt(reconcileGroupRaw, 10);
+			const decision = stockQty === 0 ? 'future' : 'have';
+			await adoptGroupListings(db, groupId, itemRow.id, title, priceCents);
+			await db
+				.prepare(
+					`UPDATE reconcile_group
+					 SET decision = ?, item_id = ?, resolved_at = datetime('now'),
+					     updated_at = datetime('now')
+					 WHERE id = ?`
+				)
+				.bind(decision, itemRow.id, groupId)
+				.run();
+
+			const ssKey = event.platform?.env?.SQUARESPACE_API_KEY;
+			const r2 = event.platform?.env?.PHOTOS;
+			const params = new URLSearchParams();
+
+			// ALWAYS pull photos from whatever the item is linked to — Squarespace,
+			// Reverb, or eBay (the adopt step only links the listings, it doesn't
+			// copy images). Runs on every "Have it" onboard regardless of the
+			// sellable toggle, so items that live only on Reverb/eBay still get
+			// template images. Best-effort + bounded; no-op when there's no source.
+			if (r2) {
+				try {
+					let ebayCreds;
+					try {
+						ebayCreds = await resolveEbayCreds(db, event.platform?.env);
+					} catch {
+						ebayCreds = undefined;
+					}
+					const n = (
+						await importItemPhotosFromAnySource(
+							db,
+							r2,
+							{ ssKey, reverbKey: event.platform?.env?.REVERB_API_KEY, ebayCreds },
+							itemRow.id,
+							8
+						)
+					).added;
+					if (n > 0) params.set('photos', String(n));
+				} catch {
+					/* non-fatal */
+				}
+			}
+
+			// "Sell on Squarespace" ticked → mark sellable + publish.
+			if (form.get('make_sellable') === 'on') {
+				const r = await publishItemAsSellable(db, ssKey, itemRow.id);
+
+				// Not on Squarespace yet (nothing to sync) → send Dad to the full
+				// listing editor to BUILD + push it: add photos, AI description,
+				// title, storefront. He returns to the wizard from there.
+				if (r.sync.status === 'skipped') {
+					throw redirect(
+						303,
+						`/items/${encodeURIComponent(sku)}/listings/squarespace?from=reconcile`
+					);
+				}
+
+				if (r.sku) params.set('published', r.sku);
+				params.set('pub', r.sync.status === 'ok' ? 'ok' : 'err');
+				if (r.sync.status === 'error') params.set('pubmsg', r.sync.message.slice(0, 160));
+				if (r.seoMissing) params.set('seo', '1');
+			}
+
+			const qs = params.toString();
+			throw redirect(303, `/reconcile/wizard${qs ? `?${qs}` : ''}`);
+		}
 
 		throw redirect(303, `/items?just_added=${encodeURIComponent(sku)}`);
 	}

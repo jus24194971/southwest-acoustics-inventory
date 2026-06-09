@@ -13,6 +13,10 @@ import { getDB } from '$lib/server/db';
  *   tracking   — "serialized" | "stocked"
  *   retired    — "1" to include retired items (default: hide them)
  *   has_photo  — "1" to only show items with at least one photo
+ *   sort       — column to sort by; see SORT_COLUMNS below for the
+ *                whitelist. Default "modified".
+ *   dir        — "asc" | "desc". Default depends on the column
+ *                (numeric / date columns default to desc; text to asc).
  *
  * Returns the matching items plus the applied-filter context so the
  * page can render removable chips and resolve filter-label display.
@@ -33,8 +37,53 @@ interface ItemRow {
 	tracking_mode: 'serialized' | 'stocked';
 	stock_qty: number;
 	retired_at: string | null;
+	updated_at: string;
 	thumb_r2_key: string | null;
 }
+
+// Whitelist of sortable columns. Maps the URL-friendly `sort` value
+// to a SQL ORDER BY clause AND a default direction. The default dir
+// is what makes the first click on a fresh column produce the "most
+// useful" view — newest dates first, biggest prices first, A→Z for
+// text. Subsequent clicks toggle the direction.
+//
+// Direction is applied as a suffix so we never interpolate user input
+// into the ORDER BY clause. The `extra` clause adds a stable tiebreaker
+// (id) so pagination would be deterministic if we ever add it.
+const SORT_COLUMNS: Record<
+	string,
+	{ expr: string; defaultDir: 'asc' | 'desc'; label: string }
+> = {
+	sku: { expr: 'i.sku', defaultDir: 'asc', label: 'SKU' },
+	title: { expr: 'i.title', defaultDir: 'asc', label: 'Title' },
+	category: { expr: 'c.name', defaultDir: 'asc', label: 'Category' },
+	condition: { expr: 'i.condition', defaultDir: 'asc', label: 'Condition' },
+	// Location sort: by location_code first, then bin_code so the bins
+	// within a location group together. NULLs (unassigned items) fall
+	// to the end on asc — SQLite's NULLs-first default; we flip with
+	// `loc.code IS NULL` to push them to the bottom on asc, to the top
+	// on desc (consistent "rare/empty values last on the natural view").
+	location: {
+		expr: 'loc.code IS NULL, loc.code, bin.code',
+		defaultDir: 'asc',
+		label: 'Where'
+	},
+	qty: { expr: 'i.stock_qty', defaultDir: 'desc', label: 'Qty' },
+	// Price: NULL prices fall to the end. Same rationale as location —
+	// "no price set" is the rare/empty case.
+	price: {
+		expr: 'i.price_cents IS NULL, i.price_cents',
+		defaultDir: 'desc',
+		label: 'Price'
+	},
+	modified: { expr: 'i.updated_at', defaultDir: 'desc', label: 'Modified' },
+	created: { expr: 'i.created_at', defaultDir: 'desc', label: 'Created' }
+};
+
+/** The fallback sort when no ?sort= is provided. "modified desc" puts
+ *  recently-edited items at the top, which is the most useful default
+ *  for Dad's "what did I just touch?" workflow. */
+const DEFAULT_SORT = 'modified';
 
 export const load: PageServerLoad = async (event) => {
 	const db = getDB(event);
@@ -48,6 +97,18 @@ export const load: PageServerLoad = async (event) => {
 	const trackingFilter = (url.searchParams.get('tracking') ?? '').trim();
 	const includeRetired = url.searchParams.get('retired') === '1';
 	const onlyHasPhoto = url.searchParams.get('has_photo') === '1';
+
+	// Sort: validate against the whitelist; fall back to the default if
+	// the user typed garbage. dir defaults to whatever the column says
+	// is the most useful first-click direction.
+	const sortRequested = (url.searchParams.get('sort') ?? '').trim().toLowerCase();
+	const sortKey = SORT_COLUMNS[sortRequested] ? sortRequested : DEFAULT_SORT;
+	const sortDef = SORT_COLUMNS[sortKey];
+	const dirRequested = (url.searchParams.get('dir') ?? '').trim().toLowerCase();
+	const sortDir: 'asc' | 'desc' =
+		dirRequested === 'asc' || dirRequested === 'desc'
+			? (dirRequested as 'asc' | 'desc')
+			: sortDef.defaultDir;
 
 	// Build the WHERE clause dynamically. Every condition is parameterised.
 	const wheres: string[] = ['i.deleted_at IS NULL'];
@@ -114,6 +175,14 @@ export const load: PageServerLoad = async (event) => {
 	// Correlated subquery for the first photo's R2 key per item.
 	// SQLite handles this fine at our scale; if we ever scrape past
 	// 10K items we'd swap for a denormalised cache.
+	// Compose ORDER BY from the whitelisted column expression + direction.
+	// `expr` can be a comma-separated list (location: "loc.code IS NULL,
+	// loc.code, bin.code"); the dir suffix only applies to the last
+	// term, which is fine — the leading NULL-flag terms are already in
+	// the right order to push NULLs to the end on asc / top on desc.
+	// Always append id as a stable tiebreaker for deterministic order.
+	const orderBy = `${sortDef.expr} ${sortDir === 'desc' ? 'DESC' : 'ASC'}, i.id ${sortDir === 'desc' ? 'DESC' : 'ASC'}`;
+
 	const sql = `
 		SELECT
 			i.id,
@@ -130,6 +199,7 @@ export const load: PageServerLoad = async (event) => {
 			i.tracking_mode,
 			i.stock_qty,
 			i.retired_at,
+			i.updated_at,
 			(SELECT ip.r2_key
 			 FROM item_photo ip
 			 WHERE ip.item_id = i.id AND ip.deleted_at IS NULL
@@ -141,7 +211,7 @@ export const load: PageServerLoad = async (event) => {
 		LEFT JOIN bin          ON bin.id = i.current_bin_id
 		LEFT JOIN location loc ON loc.id = bin.location_id
 		WHERE ${whereSql}
-		ORDER BY i.created_at DESC
+		ORDER BY ${orderBy}
 		LIMIT 500
 	`;
 
@@ -164,6 +234,11 @@ export const load: PageServerLoad = async (event) => {
 			tracking: trackingFilter,
 			retired: includeRetired,
 			has_photo: onlyHasPhoto
+		},
+		sort: {
+			key: sortKey,
+			dir: sortDir,
+			isDefault: sortKey === DEFAULT_SORT && !url.searchParams.get('dir')
 		},
 		categories: cats.results as Array<{ id: number; code: string; name: string }>,
 		locations: locs.results as Array<{ id: number; code: string; name: string }>,

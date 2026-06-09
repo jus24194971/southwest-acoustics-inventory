@@ -294,7 +294,12 @@ async function persistLocal(
 		status,
 		listing_categories_json: null,
 		listing_free_shipping: parsed.freeShipping ? 1 : 0,
-		listing_weight_oz: null
+		listing_weight_oz: null,
+		// SEO fields are SS-specific (Reverb has its own title/desc as
+		// the listing metadata, not a separate SEO override). Always
+		// null on the Reverb row.
+		listing_seo_title: null,
+		listing_seo_description: null
 	});
 
 	// platform_extras_json gets a separate write since upsertListingContent

@@ -73,6 +73,11 @@ ${VOICE_RULES.map((r) => `- ${r}`).join('\n')}
 - NARRATIVE shape (everything else): 2-4 flowing <p> paragraphs with <strong> only on a few key specs.
 - Word count: 100-200 for parts/strings/accessories; 150-300 for bodies/necks; 200-400 for full guitars.
 
+# Standard points (always weave in)
+
+- The style hint below includes a "Standard points to weave in" list. Work EVERY one of those points into the description — naturally, in your own words, folded into the prose (usually the opening or the closing). Do NOT render them as a verbatim bullet list or a separate block, and don't let them read like boilerplate.
+- These are true facts about the shop — state them with quiet confidence and don't exaggerate beyond them.
+
 # Output format
 
 Return a single JSON object with EXACTLY this shape and nothing else:

@@ -276,9 +276,49 @@ export const VOICE_RULES: string[] = [
 ];
 
 /**
+ * Brand-wide standard points Dad wants every AI-generated description to
+ * make — scoped to the product class they truthfully apply to, so a string
+ * pack never claims it was "set up and intonated". The AI weaves these into
+ * the prose (it does NOT print them as a verbatim block).
+ *
+ * Edit the wording here and every generated description tracks it.
+ */
+export const STANDARD_POINTS = {
+	guitarSetup: 'Every guitar is set up, intonated, and optimized before it leaves the shop.',
+	houseBuilt: 'Southwest Acoustics guitars are hand-assembled in Tucson, Arizona.',
+	partInspected:
+		'Every part is hand-inspected for quality and correct function before it ships.',
+	reputation:
+		'Since 2019, Southwest Acoustics has earned a stellar reputation across eBay, Reverb, and Etsy — invite the buyer to research the shop before buying.'
+};
+
+/**
+ * Which standard points apply to a given category, by product class:
+ *   - reputation    → every listing
+ *   - guitarSetup   → complete guitars (Leo Jaymz, house builds, vintage)
+ *   - houseBuilt    → Southwest Acoustics house builds only
+ *   - partInspected → everything that isn't a complete guitar (bodies,
+ *     necks, pickups, hardware, strings, accessories)
+ */
+export function standardPointsFor(categoryCode: string): string[] {
+	const style = resolveCollectionStyle(categoryCode);
+	const isGuitar = style === 'leo_jaymz' || style === 'sw_build' || style === 'vintage';
+	const points: string[] = [];
+	if (isGuitar) {
+		points.push(STANDARD_POINTS.guitarSetup);
+		if (style === 'sw_build') points.push(STANDARD_POINTS.houseBuilt);
+	} else {
+		points.push(STANDARD_POINTS.partInspected);
+	}
+	points.push(STANDARD_POINTS.reputation);
+	return points;
+}
+
+/**
  * Build a one-shot style hint block for the AI prompt. Inlines the
- * matching card + the universal voice rules. Returned as a single
- * string ready to drop into the user message.
+ * matching card + the universal voice rules + the standard points that
+ * apply to this product. Returned as a single string ready to drop
+ * into the user message.
  */
 export function buildStyleHint(categoryCode: string): string {
 	const style = resolveCollectionStyle(categoryCode);
@@ -306,5 +346,14 @@ export function buildStyleHint(categoryCode: string): string {
 	if (card.closer) {
 		lines.push('', `Common closer for this collection: "${card.closer}"`);
 	}
+
+	const points = standardPointsFor(categoryCode);
+	if (points.length > 0) {
+		lines.push(
+			'Standard points to weave in naturally (work EACH into the prose — usually the opening or closing — NOT as a verbatim bullet list or a separate block):'
+		);
+		for (const p of points) lines.push(`  - ${p}`);
+	}
+
 	return lines.filter((l) => l !== '').join('\n');
 }

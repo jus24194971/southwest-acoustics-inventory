@@ -36,6 +36,13 @@ export interface MarketplaceListing {
 	// shippingMeasurements.weight so SS's weight-based rate rules
 	// can calculate at checkout.
 	listing_weight_oz: number | null;
+	// Per-listing SEO override (Squarespace `seoOptions`). Plain
+	// strings (meta description has no HTML by spec). Nullable —
+	// when both are null, SS auto-derives from name + description,
+	// which is also the platform-agnostic default for eBay / Reverb
+	// if we add SEO controls there later.
+	listing_seo_title: string | null;
+	listing_seo_description: string | null;
 	platform_extras_json: string | null;
 	external_id: string | null;
 	external_variant_id: string | null;
@@ -44,6 +51,9 @@ export interface MarketplaceListing {
 	last_synced_at: string | null;
 	last_sync_status: SyncStatus | null;
 	last_sync_error: string | null;
+	/** Stamped once when the listing first reaches 'live'. Stable
+	 *  "date listed" — distinct from last_synced_at. */
+	listed_at: string | null;
 	created_at: string;
 	updated_at: string;
 }
@@ -82,6 +92,8 @@ export interface UpsertFields {
 	listing_categories_json: string | null;
 	listing_free_shipping: number;
 	listing_weight_oz: number | null;
+	listing_seo_title: string | null;
+	listing_seo_description: string | null;
 }
 
 /** Upsert the listing's local-only content fields. Doesn't touch the
@@ -101,9 +113,10 @@ export async function upsertListingContent(
 				listing_tags_json, listing_price_cents, listing_visible,
 				storefront_id, status,
 				listing_categories_json, listing_free_shipping, listing_weight_oz,
+				listing_seo_title, listing_seo_description,
 				updated_at
 			)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 			 ON CONFLICT (item_id, platform) DO UPDATE SET
 				listing_title = excluded.listing_title,
 				listing_description_html = excluded.listing_description_html,
@@ -116,6 +129,8 @@ export async function upsertListingContent(
 				listing_categories_json = excluded.listing_categories_json,
 				listing_free_shipping = excluded.listing_free_shipping,
 				listing_weight_oz = excluded.listing_weight_oz,
+				listing_seo_title = excluded.listing_seo_title,
+				listing_seo_description = excluded.listing_seo_description,
 				updated_at = datetime('now')`
 		)
 		.bind(
@@ -131,7 +146,9 @@ export async function upsertListingContent(
 			fields.status,
 			fields.listing_categories_json,
 			fields.listing_free_shipping,
-			fields.listing_weight_oz
+			fields.listing_weight_oz,
+			fields.listing_seo_title,
+			fields.listing_seo_description
 		)
 		.run();
 }
@@ -156,6 +173,13 @@ export async function recordSyncResult(
 			     external_variant_id = COALESCE(?, external_variant_id),
 			     external_url = COALESCE(?, external_url),
 			     status = ?,
+			     -- Stamp listed_at once, the first time a listing reaches
+			     -- 'live'. Never moved after — it's "date listed", not
+			     -- "last touched" (that's last_synced_at).
+			     listed_at = CASE
+			         WHEN listed_at IS NULL AND ? = 'live' THEN datetime('now')
+			         ELSE listed_at
+			     END,
 			     last_synced_at = datetime('now'),
 			     last_sync_status = ?,
 			     last_sync_error = ?,
@@ -166,6 +190,7 @@ export async function recordSyncResult(
 			args.externalId ?? null,
 			args.externalVariantId ?? null,
 			args.externalUrl ?? null,
+			args.status,
 			args.status,
 			args.syncStatus,
 			args.syncError ?? null,

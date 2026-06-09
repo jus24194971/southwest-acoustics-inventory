@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Reconcile — The Great Listing Round-Up</title>
+		<style>
+			@page {
+				size: letter;
+				margin: 15mm 16mm 13mm;
+			}
+			* {
+				box-sizing: border-box;
+			}
+			body {
+				font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+				color: #2b2620;
+				line-height: 1.5;
+				font-size: 11pt;
+				margin: 0;
+			}
+			h1,
+			h2,
+			h3 {
+				font-family: Georgia, 'Times New Roman', serif;
+				color: #8a6a22;
+				margin: 0;
+			}
+			i {
+				color: #5a5040;
+			}
+			.cover {
+				border: 2px solid #cda350;
+				border-radius: 14px;
+				background: linear-gradient(160deg, #fbf7ee 0%, #f4ead2 100%);
+				padding: 24px 30px;
+				margin-bottom: 18px;
+				display: flex;
+				align-items: center;
+				gap: 22px;
+			}
+			.monogram {
+				font-family: Georgia, serif;
+				font-style: italic;
+				font-weight: 700;
+				font-size: 52px;
+				letter-spacing: -4px;
+				color: #a07c34;
+				line-height: 1;
+				flex-shrink: 0;
+				border-right: 2px solid #d9c79a;
+				padding-right: 22px;
+			}
+			.cover h1 {
+				font-size: 21pt;
+				line-height: 1.08;
+			}
+			.cover .sub {
+				font-size: 11pt;
+				color: #6a5f48;
+				margin-top: 6px;
+				font-style: italic;
+			}
+			.eyebrow {
+				text-transform: uppercase;
+				letter-spacing: 2px;
+				font-size: 8pt;
+				color: #b08a3a;
+				font-weight: 700;
+			}
+			.lede {
+				font-size: 11pt;
+				color: #4a4231;
+				margin: 2px 0 6px;
+			}
+			.step {
+				margin: 14px 0;
+				padding-left: 44px;
+				position: relative;
+				break-inside: avoid;
+			}
+			.step .num {
+				position: absolute;
+				left: 0;
+				top: 1px;
+				width: 30px;
+				height: 30px;
+				border-radius: 50%;
+				background: #cda350;
+				color: #2b2620;
+				font-family: Georgia, serif;
+				font-weight: 700;
+				font-size: 14pt;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+			}
+			.step h2 {
+				font-size: 14pt;
+				margin-bottom: 3px;
+			}
+			.step .tag {
+				font-style: italic;
+				color: #9a8a60;
+				font-size: 10pt;
+				font-family: Georgia, serif;
+			}
+			ul {
+				margin: 5px 0;
+				padding-left: 18px;
+			}
+			li {
+				margin: 3px 0;
+			}
+			.pill {
+				display: inline-block;
+				background: #efe4c8;
+				color: #6a5320;
+				border-radius: 5px;
+				padding: 0 6px;
+				font-size: 9.5pt;
+				font-weight: 600;
+				white-space: nowrap;
+			}
+			.callout {
+				background: #fbf6ea;
+				border-left: 4px solid #cda350;
+				border-radius: 0 8px 8px 0;
+				padding: 9px 14px;
+				margin: 11px 0;
+				font-size: 10.5pt;
+				break-inside: avoid;
+			}
+			.callout b {
+				color: #8a6a22;
+			}
+			.section-rule {
+				border: none;
+				border-top: 1px solid #e3d6b6;
+				margin: 18px 0 4px;
+			}
+			.footer {
+				margin-top: 22px;
+				padding-top: 11px;
+				border-top: 1px solid #e3d6b6;
+				font-size: 9.5pt;
+				color: #8a7d60;
+				text-align: center;
+				font-style: italic;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="cover">
+			<div class="monogram">SA</div>
+			<div>
+				<div class="eyebrow">Southwest Acoustics · A Feature You Did Not Ask For</div>
+				<h1>The Great Listing Round-Up</h1>
+				<div class="sub">aka “Reconcile” — your computer now does your least favorite chore.</div>
+			</div>
+		</div>
+
+		<p class="lede">
+			Hey Dad. You've got the same guitars and parts scattered across Squarespace, Reverb, and eBay
+			like a yard sale that got out of hand. Matching them all up by hand sounds like a special kind
+			of punishment — so I built a robot for it. It's called <b>Reconcile</b>, it lives under
+			<span class="pill">Listings → Reconcile</span>, and here's how to boss it around.
+		</p>
+
+		<hr class="section-rule" />
+
+		<div class="step">
+			<div class="num">1</div>
+			<h2>Round 'em up <span class="tag">— the scrape</span></h2>
+			<ul>
+				<li>Paste your <b>eBay store link</b> in the box, hit <span class="pill">Save</span>.</li>
+				<li>
+					Click <span class="pill">Scrape all my listings</span>. Sit back ~15 seconds while it
+					hauls in <i>everything</i> you have on all three sites. Yes, even that one.
+				</li>
+			</ul>
+		</div>
+
+		<div class="step">
+			<div class="num">2</div>
+			<h2>Let it match them up <span class="tag">— the AI bit</span></h2>
+			<ul>
+				<li>
+					Click <span class="pill">Match with AI</span>. It introduces your “1962 Strat” on eBay to
+					your “Vintage Strat (Sunburst!!)” on Reverb so they finally realize they're the same
+					guitar.
+				</li>
+				<li>
+					Skim the cards. If it ever pairs two different things, smack <b>detach</b> on the impostor
+					and tell it why — it learns from that (unlike some people).
+				</li>
+				<li>Tap <span class="pill">Validate match</span> on the ones that look right.</li>
+			</ul>
+			<div class="callout">
+				<b>It can tell a Tele from a Strat</b> — partly because it looks at the photo, and partly
+				because I threatened it. If it still slips up, that's what “detach” is for.
+			</div>
+		</div>
+
+		<div class="step">
+			<div class="num">3</div>
+			<h2>Walk the line <span class="tag">— the Review Wizard</span></h2>
+			<p style="margin: 3px 0">
+				Hit <span class="pill">Review wizard</span>. It shows you <b>one thing at a time</b> so you
+				never feel buried. Coffee in hand, just react:
+			</p>
+			<ul>
+				<li>
+					<b>New finds it scraped</b> → <span class="pill">Have it</span> (punch in how many you've
+					got — it fills in the brand, model, color, even reads the photo; nod and Save),
+					<span class="pill">Future</span> (you'll carry it, not yet), or
+					<span class="pill">No longer have</span>.
+				</li>
+				<li>
+					<b>Stuff already in your inventory</b> → <span class="pill">Keep</span>,
+					<span class="pill">Never carry again</span> (retires it — but keeps a full copy you can
+					un-retire later), or <span class="pill">Skip</span>.
+				</li>
+			</ul>
+			<div class="callout">
+				When you hit “Have it,” the listing photos ride along on the form so you can eyeball the item
+				while you check the details. Your job is mostly to nod and click Save. It's a good job.
+			</div>
+		</div>
+
+		<div class="step">
+			<div class="num">4</div>
+			<h2>Take out the trash <span class="tag">— Dead Listings</span></h2>
+			<ul>
+				<li>
+					Everything you flagged <i>“no longer have”</i> piles up on the
+					<span class="pill">Dead listings</span> page (Listings menu).
+				</li>
+				<li>
+					Hit <span class="pill">Remove</span> (or <b>Remove all</b>) and it yanks them off
+					Squarespace and Reverb <i>for you</i>.
+				</li>
+				<li>
+					For eBay, click <b>open</b>, end it on eBay yourself, then tap
+					<span class="pill">Mark ended</span>. (eBay won't let outside apps end its old listings,
+					because eBay is eBay.)
+				</li>
+			</ul>
+			<div class="callout">
+				<b>Nothing comes down by accident.</b> A live listing only disappears when <i>you</i>
+				personally click Remove on this page. Until then, mash buttons fearlessly — you cannot break
+				a thing.
+			</div>
+		</div>
+
+		<div class="footer">
+			You didn't ask for this. That's the best part. &nbsp;•&nbsp; Take it one card at a time —
+			you've got this. &nbsp;•&nbsp; Southwest Acoustics
+		</div>
+	</body>
+</html>

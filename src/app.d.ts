@@ -27,6 +27,40 @@ declare global {
 				/** Reverb Marketplace API key (Personal Access Token). Set
 				 *  via `wrangler pages secret put REVERB_API_KEY`. */
 				REVERB_API_KEY?: string;
+				/** eBay developer app credentials. Set via
+				 *  `wrangler pages secret put EBAY_CLIENT_ID` etc. */
+				EBAY_CLIENT_ID?: string;
+				EBAY_CLIENT_SECRET?: string;
+				/** Long-lived (18mo) refresh token minted via eBay's
+				 *  authorization_code consent flow. Required to actually
+				 *  push listings; without it, the editor saves drafts
+				 *  but disables the Push button. */
+				EBAY_REFRESH_TOKEN?: string;
+				/** Optional eBay API base URL override — set to
+				 *  `https://api.sandbox.ebay.com` to point at the
+				 *  sandbox environment. Defaults to prod. */
+				EBAY_API_BASE?: string;
+				/** eBay merchant location key — references a warehouse.
+				 *  Usually created via the in-app "Create location" flow
+				 *  and stored in D1; this env var is a fallback override. */
+				EBAY_MERCHANT_LOCATION_KEY?: string;
+				/** eBay RuName — the redirect identifier registered in
+				 *  the dev portal, used as redirect_uri in the OAuth flow. */
+				EBAY_RU_NAME?: string;
+				/** Self-chosen token for verifying eBay's marketplace
+				 *  account-deletion notification challenge. Must match
+				 *  what's entered in the eBay dev portal. D1 (app_secret
+				 *  key `ebay_verification_token`) is the source of truth;
+				 *  this env var is a fallback. */
+				EBAY_VERIFICATION_TOKEN?: string;
+				/** Optional override for the notification endpoint URL used
+				 *  in the challenge hash. Defaults to the hardcoded
+				 *  canonical URL. Set if you move to a custom domain. */
+				EBAY_NOTIFICATION_ENDPOINT?: string;
+				/** Shared secret gating GET /api/listings/heartbeat so an
+				 *  external scheduler can trigger the periodic listing
+				 *  health check. Unset = heartbeat disabled. */
+				LISTING_HEARTBEAT_KEY?: string;
 			};
 			context: {
 				waitUntil(promise: Promise<unknown>): void;

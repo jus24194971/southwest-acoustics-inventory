@@ -3,6 +3,13 @@ import { fail, redirect } from '@sveltejs/kit';
 import { getDB } from '$lib/server/db';
 import { loadPreferences } from '$lib/server/preferences';
 import { listProducts, SquarespaceError } from '$lib/server/squarespace';
+import { checkConnection, createInventoryLocation, EbayError } from '$lib/server/ebay';
+import {
+	resolveEbayCreds,
+	clearEbayTokens,
+	storeEbayLocationKey,
+	getEbayVerificationToken
+} from '$lib/server/ebay_credentials';
 
 /**
  * Settings page — accessibility prefs + connection status.
@@ -34,11 +41,79 @@ export const load: PageServerLoad = async (event) => {
 		probeD1(db)
 	]);
 
+	// eBay is richer than a one-line status — it has a Connect/Disconnect
+	// lifecycle + a location setup step, so it gets its own structured
+	// block rather than a row in the generic connections list.
+	const ebay = await probeEbay(db, event.platform?.env);
+
+	// Values the operator pastes into eBay's dev portal when registering
+	// the marketplace-deletion notification. Surfaced here (behind Access)
+	// with copy buttons so they don't have to be hunted down. The
+	// endpoint is derived from the current origin so it matches whatever
+	// domain you're browsing — same string eBay will hash against.
+	const ebayNotify = {
+		// Show the canonical registered URL (what the hash uses), not the
+		// request-derived one, so the copy button always gives eBay the
+		// exact value the endpoint hashes against.
+		endpoint:
+			event.platform?.env?.EBAY_NOTIFICATION_ENDPOINT ??
+			'https://sw-acoustics-inventory.pages.dev/api/ebay/notifications',
+		verificationToken: await getEbayVerificationToken(db, event.platform?.env)
+	};
+
 	return {
 		preferences,
-		connections: [squarespace, anthropic, r2Status, d1Status] as ConnectionStatus[]
+		connections: [squarespace, anthropic, r2Status, d1Status] as ConnectionStatus[],
+		ebay,
+		ebayNotify
 	};
 };
+
+interface EbayStatus {
+	appConfigured: boolean;
+	ruNameConfigured: boolean;
+	appTokenOk: boolean;
+	userConnected: boolean;
+	accountLabel: string | null;
+	refreshExpiresAt: string | null;
+	locationKey: string | null;
+	error: string | null;
+}
+
+async function probeEbay(
+	db: ReturnType<typeof getDB>,
+	env: App.Platform['env'] | undefined
+): Promise<EbayStatus> {
+	const appConfigured = !!(env?.EBAY_CLIENT_ID && env?.EBAY_CLIENT_SECRET);
+	// Resolve creds up front so the RuName check reflects the D1-stored
+	// value (the env Pages secret is shell-pipe-corrupted and unreliable).
+	const creds = await resolveEbayCreds(db, env);
+	const ruNameConfigured = !!creds.EBAY_RU_NAME;
+	if (!appConfigured) {
+		return {
+			appConfigured: false,
+			ruNameConfigured,
+			appTokenOk: false,
+			userConnected: false,
+			accountLabel: null,
+			refreshExpiresAt: null,
+			locationKey: null,
+			error: null
+		};
+	}
+
+	const conn = await checkConnection(creds);
+	return {
+		appConfigured,
+		ruNameConfigured,
+		appTokenOk: conn.app,
+		userConnected: conn.user,
+		accountLabel: creds.accountLabel,
+		refreshExpiresAt: creds.refreshExpiresAt,
+		locationKey: creds.EBAY_MERCHANT_LOCATION_KEY ?? null,
+		error: conn.error ?? null
+	};
+}
 
 async function probeAnthropic(apiKey: string | undefined): Promise<ConnectionStatus> {
 	if (!apiKey) {
@@ -162,6 +237,66 @@ export const actions: Actions = {
 		]);
 
 		throw redirect(303, '/settings?saved=1');
+	},
+
+	// Forget the stored eBay connection. Doesn't revoke on eBay's side
+	// (Dad can do that in his eBay account security settings) — just
+	// drops our refresh token so the next Connect starts fresh.
+	disconnectEbay: async (event) => {
+		const db = getDB(event);
+		await clearEbayTokens(db);
+		throw redirect(303, '/settings?ebay=disconnected');
+	},
+
+	// Create (or ensure) the eBay inventory location every offer needs.
+	// Collects a minimal address; eBay requires at least country +
+	// postal code for shipping calculation.
+	createEbayLocation: async (event) => {
+		const db = getDB(event);
+		const env = event.platform?.env;
+		if (!env) return fail(500, { ebayError: 'platform env missing' });
+
+		const creds = await resolveEbayCreds(db, env);
+		if (!creds.hasRefreshToken) {
+			return fail(400, {
+				ebayError: 'Connect your eBay account first — creating a location needs the user token.'
+			});
+		}
+
+		const form = await event.request.formData();
+		const postalCode = (form.get('postal_code') ?? '').toString().trim();
+		const country = (form.get('country') ?? 'US').toString().trim().toUpperCase();
+		const addressLine1 = (form.get('address_line1') ?? '').toString().trim() || undefined;
+		const city = (form.get('city') ?? '').toString().trim() || undefined;
+		const stateOrProvince = (form.get('state') ?? '').toString().trim() || undefined;
+		const name = (form.get('location_name') ?? 'Southwest Acoustics').toString().trim();
+
+		if (!postalCode) {
+			return fail(400, { ebayError: 'Postal code is required for the eBay location.' });
+		}
+
+		// Stable key so re-running just updates the same location.
+		const key = 'sw-acoustics-main';
+		try {
+			await createInventoryLocation(creds, key, name, {
+				addressLine1,
+				city,
+				stateOrProvince,
+				postalCode,
+				country
+			});
+			await storeEbayLocationKey(db, key);
+			throw redirect(303, '/settings?ebay=location_created');
+		} catch (err) {
+			if (err && typeof err === 'object' && 'status' in err && 'location' in err) throw err;
+			const message =
+				err instanceof EbayError
+					? `HTTP ${err.httpStatus} from eBay: ${err.body.slice(0, 300)}`
+					: err instanceof Error
+						? err.message
+						: String(err);
+			return fail(500, { ebayError: message });
+		}
 	}
 };
 

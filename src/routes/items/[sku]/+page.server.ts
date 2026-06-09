@@ -4,6 +4,12 @@ import { error, fail, redirect } from '@sveltejs/kit';
 import { getDB } from '$lib/server/db';
 import { isCondition, normaliseAttr, ATTR_UNIQUE, generateSku, type Condition } from '$lib/server/sku';
 import { defaultSlug, type Platform } from '$lib/server/listings';
+import { autoSyncSquarespaceForItem, type SsAutoSyncOutcome } from '$lib/server/ss_auto_sync';
+import {
+	importItemPhotosFromSquarespace,
+	importItemPhotosFromAnySource
+} from '$lib/server/squarespace_import';
+import { resolveEbayCreds } from '$lib/server/ebay_credentials';
 
 /**
  * Item detail page — the screen Dad spends most of his time on.
@@ -57,6 +63,7 @@ interface ItemRow {
 	loc_name: string | null;
 	tracking_mode: 'serialized' | 'stocked';
 	stock_qty: number;
+	sellable: number;
 	attr_1: string;
 	attr_2: string;
 	attr_3: string;
@@ -136,6 +143,19 @@ async function loadItemBySku(db: D1Database, sku: string) {
 		.bind(sku)
 		.first<ItemRow>();
 	return item;
+}
+
+/** Fold a Squarespace auto-sync outcome into redirect query params so the
+ *  item page can show a small banner about what happened on SS. A
+ *  'skipped' outcome adds nothing — there's nothing to tell Dad when the
+ *  item isn't sellable or isn't listed. */
+function applySyncParams(params: URLSearchParams, sync: SsAutoSyncOutcome): void {
+	if (sync.status === 'ok') {
+		params.set('ss_sync', sync.action === 'delete' ? 'deleted' : 'ok');
+	} else if (sync.status === 'error') {
+		params.set('ss_sync', 'err');
+		params.set('ss_msg', sync.message.slice(0, 160));
+	}
 }
 
 export const load: PageServerLoad = async (event) => {
@@ -267,10 +287,22 @@ export const load: PageServerLoad = async (event) => {
 			listing_visible: number;
 		}>();
 
+	// Label templates for the per-item "Print label" size/printer picker —
+	// default first so the dropdown opens on Dad's usual label.
+	const { results: templates } = await db
+		.prepare(
+			`SELECT code, display_name, is_default
+			 FROM label_template
+			 WHERE is_active = 1
+			 ORDER BY is_default DESC, display_name`
+		)
+		.all<{ code: string; display_name: string; is_default: number }>();
+
 	return {
 		item,
 		attrValues,
 		listings,
+		templates,
 		photos: photos.results as PhotoRow[],
 		movements: movements.results as MovementRow[],
 		bins: bins.results as Array<{
@@ -462,7 +494,32 @@ export const actions: Actions = {
 		}
 		await db.batch(writes);
 
-		throw redirect(303, `/items/${finalSku}`);
+		// If this edit touched anything Squarespace mirrors — title, price,
+		// SKU or stock — push it live (no-op unless the item is sellable +
+		// listed). One content sync covers all of them, stock included.
+		// NOTE: the description is intentionally NOT in this list — auto-sync
+		// preserves the listing copy Dad styled in Squarespace, so editing the
+		// item description here never pushes (he'd use the SS editor for that).
+		const editParams = new URLSearchParams();
+		const ssRelevantChanged =
+			title !== item.title ||
+			priceCents !== item.price_cents ||
+			finalSku !== item.sku ||
+			stockQty !== item.stock_qty;
+		if (ssRelevantChanged) {
+			editParams.set('edited', '1');
+			applySyncParams(
+				editParams,
+				await autoSyncSquarespaceForItem(
+					db,
+					event.platform?.env?.SQUARESPACE_API_KEY,
+					item.id,
+					{ type: 'content' }
+				)
+			);
+		}
+		const editQs = editParams.toString();
+		throw redirect(303, `/items/${finalSku}${editQs ? `?${editQs}` : ''}`);
 	},
 
 	// (Category changes are folded into the `edit` action above so the
@@ -547,7 +604,17 @@ export const actions: Actions = {
 				.bind(reason, item.id)
 		]);
 
-		throw redirect(303, `/items/${item.sku}`);
+		// Sellable + listed? Pull the listing off Squarespace now that the
+		// item is discontinued. Best-effort; surfaced via a banner.
+		const retireParams = new URLSearchParams({ retired: '1' });
+		applySyncParams(
+			retireParams,
+			await autoSyncSquarespaceForItem(db, event.platform?.env?.SQUARESPACE_API_KEY, item.id, {
+				type: 'delete'
+			})
+		);
+
+		throw redirect(303, `/items/${item.sku}?${retireParams.toString()}`);
 	},
 
 	unretire: async (event) => {
@@ -576,6 +643,55 @@ export const actions: Actions = {
 		]);
 
 		throw redirect(303, `/items/${item.sku}`);
+	},
+
+	// ============================================================
+	// Sellable toggle — takes the item LIVE (or stops auto-sync)
+	// ============================================================
+	//
+	// When ON, edits (title/price/SKU/description), quantity changes and
+	// retirement auto-propagate to the item's Squarespace listing (see
+	// $lib/server/ss_auto_sync). Turning it ON also runs an immediate full
+	// content sync so SS matches our record from the moment Dad flips the
+	// switch. Turning it OFF just stops future auto-sync; it leaves the
+	// existing SS listing untouched.
+	setSellable: async (event) => {
+		const db = getDB(event);
+		const item = await loadItemBySku(db, event.params.sku);
+		if (!item) throw error(404);
+
+		const form = await event.request.formData();
+		const sellable = form.get('sellable')?.toString() === '1' ? 1 : 0;
+
+		await db
+			.prepare(`UPDATE item SET sellable = ?, updated_at = datetime('now') WHERE id = ?`)
+			.bind(sellable, item.id)
+			.run();
+
+		const params = new URLSearchParams({ sellable: sellable === 1 ? 'on' : 'off' });
+		if (sellable === 1) {
+			// Baseline FULL sync on enable so SS mirrors title/price/SKU/stock
+			// from the moment Dad flips the switch (no-op if not listed yet).
+			const ssKey = event.platform?.env?.SQUARESPACE_API_KEY;
+			applySyncParams(
+				params,
+				await autoSyncSquarespaceForItem(db, ssKey, item.id, { type: 'content' })
+			);
+			// Pull the SS product's photos into our gallery if they're missing
+			// (items onboarded via the reconcile wizard come in photoless). Best-
+			// effort + idempotent — skips images we already have, never blocks.
+			const r2 = event.platform?.env?.PHOTOS;
+			if (r2 && ssKey) {
+				try {
+					const n = (await importItemPhotosFromSquarespace(db, r2, ssKey, item.id, 10)).added;
+					if (n > 0) params.set('photos', String(n));
+				} catch {
+					/* non-fatal */
+				}
+			}
+		}
+
+		throw redirect(303, `/items/${item.sku}?${params.toString()}`);
 	},
 
 	// ============================================================
@@ -625,16 +741,17 @@ export const actions: Actions = {
 		if (!Number.isInteger(newQty) || newQty < 0) {
 			return fail(400, { adjustError: 'Quantity must be a non-negative integer.' });
 		}
-		// Serialized items are conceptually "one unique physical unit" —
-		// qty stays in 0..1. If Dad needs to track multiples of the same
-		// listing, the right move is to change tracking mode to stocked
-		// via the Edit form. We block >1 here to keep the model honest.
-		if (item.tracking_mode === 'serialized' && newQty > 1) {
-			return fail(400, {
-				adjustError:
-					'Serialized items can only be 0 or 1. To track multiple, change tracking mode to Stocked first.'
-			});
-		}
+		// Serialized items used to be hard-capped at 0..1 here — bumping
+		// from 1 → 2 returned a "change tracking mode in Edit first"
+		// error, which was a real workflow blocker (Dad gets another
+		// similar unit, wants to keep the same listing). New behavior:
+		// adjusting a serialized item past 1 auto-promotes it to
+		// Stocked tracking in the same transaction. The serialized
+		// invariant "one unique physical unit" stays meaningful — it
+		// just gets reclassified the moment Dad says it isn't one.
+		const willPromoteToStocked =
+			item.tracking_mode === 'serialized' && newQty > 1;
+
 		if (newQty === item.stock_qty) {
 			return fail(400, { adjustError: `Already at ${newQty}. Nothing to adjust.` });
 		}
@@ -673,7 +790,15 @@ export const actions: Actions = {
 			other: 'Other'
 		};
 		const baseNote = `${reasonLabel[reason]}: ${item.stock_qty} → ${newQty} (${direction} ${Math.abs(delta)})`;
-		const finalNote = note ? `${baseNote} · ${note}` : baseNote;
+		// Surface the tracking-mode change in the movement note so the
+		// audit trail tells the whole story — "Restocked: 1 → 2 ·
+		// Auto-switched serialized→stocked".
+		const promotionNote = willPromoteToStocked
+			? ' · Auto-switched serialized→stocked'
+			: '';
+		const finalNote = note
+			? `${baseNote} · ${note}${promotionNote}`
+			: `${baseNote}${promotionNote}`;
 
 		// For sale/scrap movements we record the from_bin so the audit
 		// trail shows where the stock came out of. Restocked / adjust
@@ -682,6 +807,26 @@ export const actions: Actions = {
 		const fromBinId =
 			kind === 'sale' || kind === 'scrap' ? item.current_bin_id : null;
 		const toBinId = kind === 'receive' ? item.current_bin_id : null;
+
+		// Single UPDATE handles both cases — the qty change always
+		// happens, the tracking_mode flip only when we're promoting.
+		// COALESCE-style branching in the values keeps the statement
+		// flat instead of duplicating it.
+		const updateItem = willPromoteToStocked
+			? db
+					.prepare(
+						`UPDATE item
+						 SET stock_qty = ?,
+						     tracking_mode = 'stocked',
+						     updated_at = datetime('now')
+						 WHERE id = ?`
+					)
+					.bind(newQty, item.id)
+			: db
+					.prepare(
+						`UPDATE item SET stock_qty = ?, updated_at = datetime('now') WHERE id = ?`
+					)
+					.bind(newQty, item.id);
 
 		await db.batch([
 			db
@@ -698,15 +843,24 @@ export const actions: Actions = {
 					finalNote,
 					event.locals?.userEmail ?? 'system'
 				),
-
-			db
-				.prepare(
-					`UPDATE item SET stock_qty = ?, updated_at = datetime('now') WHERE id = ?`
-				)
-				.bind(newQty, item.id)
+			updateItem
 		]);
 
-		throw redirect(303, `/items/${item.sku}`);
+		// Auto-sync the new stock to Squarespace if this item is sellable
+		// (and listed). Best-effort — the qty change above already
+		// committed, so a sync hiccup shows as a banner, not an error.
+		const adjustParams = new URLSearchParams({ adjusted: '1' });
+		applySyncParams(
+			adjustParams,
+			await autoSyncSquarespaceForItem(
+				db,
+				event.platform?.env?.SQUARESPACE_API_KEY,
+				item.id,
+				{ type: 'stock', quantity: newQty }
+			)
+		);
+
+		throw redirect(303, `/items/${item.sku}?${adjustParams.toString()}`);
 	},
 
 	// ============================================================
@@ -829,6 +983,48 @@ export const actions: Actions = {
 				? `?photo_warn=${encodeURIComponent('Skipped: ' + rejected.join('; '))}`
 				: '';
 		throw redirect(303, `/items/${item.sku}${flash}`);
+	},
+
+	// Pull an item's photos from its SOURCE — tries Squarespace, then Reverb,
+	// then eBay (whichever it's linked to), then the reconcile scrape's primary
+	// images. Covers items that live only on Reverb/eBay (moved into stock).
+	// Idempotent — skips images we already have.
+	pullPhotos: async (event) => {
+		const db = getDB(event);
+		const env = event.platform?.env;
+		const r2 = env?.PHOTOS;
+		const item = await loadItemBySku(db, event.params.sku);
+		if (!item) throw error(404);
+		if (!r2) return fail(400, { photoError: 'Photo storage isn’t configured.' });
+
+		let ebayCreds;
+		try {
+			ebayCreds = await resolveEbayCreds(db, env);
+		} catch {
+			ebayCreds = undefined;
+		}
+		const creds = {
+			ssKey: env?.SQUARESPACE_API_KEY,
+			reverbKey: env?.REVERB_API_KEY,
+			ebayCreds
+		};
+
+		let result;
+		try {
+			result = await importItemPhotosFromAnySource(db, r2, creds, item.id, 20);
+		} catch (err) {
+			return fail(500, {
+				photoError: `Couldn’t pull photos: ${err instanceof Error ? err.message : 'unknown error'}`
+			});
+		}
+		const sp = new URLSearchParams({
+			pulled_photos: String(result.added),
+			ss_found: String(result.found)
+		});
+		if (result.source) sp.set('pull_src', result.source);
+		if (result.added === 0 && result.firstError) sp.set('pull_err', result.firstError.slice(0, 160));
+		if (result.attempts.length) sp.set('pull_log', result.attempts.join(' · ').slice(0, 220));
+		throw redirect(303, `/items/${encodeURIComponent(item.sku)}?${sp.toString()}`);
 	},
 
 	deletePhoto: async (event) => {

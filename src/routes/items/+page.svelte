@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import type { PageData } from './$types';
+	import InfoTip from '$lib/components/InfoTip.svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -15,6 +16,48 @@
 	function formatPrice(cents: number | null): string {
 		if (cents == null) return '—';
 		return `$${(cents / 100).toFixed(2)}`;
+	}
+
+	/**
+	 * Format an ISO-ish timestamp (SQLite's `YYYY-MM-DD HH:MM:SS` UTC)
+	 * as a human-friendly relative + absolute string. Recent edits
+	 * read "2h ago", older ones drop back to the date. Tooltip shows
+	 * the full date for hover.
+	 */
+	function formatModified(ts: string | null): { label: string; tooltip: string } {
+		if (!ts) return { label: '—', tooltip: '' };
+		// SQLite returns "YYYY-MM-DD HH:MM:SS" in UTC. Browsers parse
+		// that as local-time unless we glue a 'Z' on.
+		const iso = ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
+		const d = new Date(iso);
+		if (Number.isNaN(d.getTime())) return { label: ts, tooltip: ts };
+		const now = Date.now();
+		const diffMs = now - d.getTime();
+		const sec = Math.floor(diffMs / 1000);
+		const min = Math.floor(sec / 60);
+		const hr = Math.floor(min / 60);
+		const day = Math.floor(hr / 24);
+
+		let label: string;
+		if (sec < 45) label = 'just now';
+		else if (min < 60) label = `${min}m ago`;
+		else if (hr < 24) label = `${hr}h ago`;
+		else if (day < 7) label = `${day}d ago`;
+		else if (day < 30) label = `${Math.floor(day / 7)}w ago`;
+		else
+			label = d.toLocaleDateString(undefined, {
+				year: 'numeric',
+				month: 'short',
+				day: 'numeric'
+			});
+		const tooltip = d.toLocaleString(undefined, {
+			year: 'numeric',
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
+		return { label, tooltip };
 	}
 
 	const CONDITION_LABEL: Record<string, string> = {
@@ -58,6 +101,47 @@
 		const qs = next.toString();
 		return qs ? `/items?${qs}` : '/items';
 	}
+
+	/**
+	 * Build a header URL that sorts by `key`. Clicking the column
+	 * that's already the active sort toggles the direction. Clicking
+	 * a different column resets to that column's natural default
+	 * direction (the server picks asc vs desc per column).
+	 *
+	 * For the default-sort case (no explicit `dir` in URL), we don't
+	 * set `dir` on the link — keeps the URL clean. Subsequent toggle
+	 * clicks force the explicit dir param.
+	 */
+	function sortHref(key: string): string {
+		const next = new URLSearchParams(page.url.searchParams);
+		const currentKey = data.sort.key;
+		const currentDir = data.sort.dir;
+		if (currentKey === key) {
+			// Toggling current column — flip the direction explicitly.
+			next.set('sort', key);
+			next.set('dir', currentDir === 'asc' ? 'desc' : 'asc');
+		} else {
+			// New column — use its natural default direction by not
+			// passing dir at all (server reads the column's defaultDir).
+			next.set('sort', key);
+			next.delete('dir');
+		}
+		const qs = next.toString();
+		return qs ? `/items?${qs}` : '/items';
+	}
+
+	/** Arrow glyph next to the active-sort header. */
+	function sortIndicator(key: string): string {
+		if (data.sort.key !== key) return '';
+		return data.sort.dir === 'asc' ? ' ▲' : ' ▼';
+	}
+
+	// Tailwind class string for every sortable header link. Hoisted
+	// out of the markup so we don't repeat it eight times in the
+	// table head. (Svelte's {@const} can only live inside #if/#each/
+	// snippet/component scopes, not as a direct child of <div>.)
+	const sortLinkClass =
+		'inline-flex items-baseline gap-1 hover:text-[color:var(--color-gold-bright)] transition-colors';
 
 	function onSearchSubmit(e: Event) {
 		e.preventDefault();
@@ -146,7 +230,20 @@
 			</label>
 
 			<label class="flex items-center gap-1.5">
-				<span class="eyebrow">Tracking</span>
+				<span class="eyebrow inline-flex items-center gap-0.5">
+					Tracking
+					<InfoTip title="Serialized vs Stocked">
+						<p>
+							<strong>Serialized</strong> = one specific physical unit (a used guitar with
+							its own story). Stays at 0 or 1; the listing is preserved as "out of stock"
+							when sold.
+						</p>
+						<p>
+							<strong>Stocked</strong> = interchangeable inventory (strings, picks, new
+							parts). Any non-negative quantity.
+						</p>
+					</InfoTip>
+				</span>
 				<select
 					value={data.filters.tracking}
 					onchange={(e) => goto(withParam('tracking', e.currentTarget.value))}
@@ -239,18 +336,92 @@
 		</div>
 	{:else}
 		<div class="panel overflow-hidden">
+			<!-- Sortable header cells: every column with a meaningful order is
+				 a link. Active-sort column shows a ▲/▼ glyph and a brighter
+				 color so it stands out. Click the same column to flip
+				 direction; click a different column to switch to its natural
+				 default direction (text → asc, numeric/date → desc).
+				 `sortLinkClass` lives in the <script> block above. -->
 			<table class="w-full text-sm">
 				<thead
 					class="border-b border-[color:var(--color-line-dim)] bg-[color:var(--color-panel-2)]"
 				>
 					<tr class="text-left">
 						<th class="eyebrow w-14 px-2 py-2.5"></th>
-						<th class="eyebrow px-3 py-2.5">SKU</th>
-						<th class="eyebrow px-3 py-2.5">Title</th>
-						<th class="eyebrow px-3 py-2.5">Condition</th>
-						<th class="eyebrow px-3 py-2.5">Where</th>
-						<th class="eyebrow px-3 py-2.5 text-right">Qty</th>
-						<th class="eyebrow px-3 py-2.5 text-right">Price</th>
+						<th class="eyebrow px-3 py-2.5">
+							<a
+								href={sortHref('sku')}
+								class={sortLinkClass}
+								class:text-[color:var(--color-gold-bright)]={data.sort.key === 'sku'}
+							>
+								SKU{sortIndicator('sku')}
+							</a>
+						</th>
+						<th class="eyebrow px-3 py-2.5">
+							<a
+								href={sortHref('title')}
+								class={sortLinkClass}
+								class:text-[color:var(--color-gold-bright)]={data.sort.key === 'title'}
+							>
+								Title{sortIndicator('title')}
+							</a>
+							<span class="ml-2 normal-case text-[color:var(--color-ink-4)]">
+								·
+								<a
+									href={sortHref('category')}
+									class="hover:text-[color:var(--color-gold-bright)] transition-colors"
+									class:text-[color:var(--color-gold-bright)]={data.sort.key === 'category'}
+								>
+									Category{sortIndicator('category')}
+								</a>
+							</span>
+						</th>
+						<th class="eyebrow px-3 py-2.5">
+							<a
+								href={sortHref('condition')}
+								class={sortLinkClass}
+								class:text-[color:var(--color-gold-bright)]={data.sort.key === 'condition'}
+							>
+								Condition{sortIndicator('condition')}
+							</a>
+						</th>
+						<th class="eyebrow px-3 py-2.5">
+							<a
+								href={sortHref('location')}
+								class={sortLinkClass}
+								class:text-[color:var(--color-gold-bright)]={data.sort.key === 'location'}
+							>
+								Where{sortIndicator('location')}
+							</a>
+						</th>
+						<th class="eyebrow px-3 py-2.5 text-right">
+							<a
+								href={sortHref('qty')}
+								class="{sortLinkClass} justify-end"
+								class:text-[color:var(--color-gold-bright)]={data.sort.key === 'qty'}
+							>
+								Qty{sortIndicator('qty')}
+							</a>
+						</th>
+						<th class="eyebrow px-3 py-2.5 text-right">
+							<a
+								href={sortHref('price')}
+								class="{sortLinkClass} justify-end"
+								class:text-[color:var(--color-gold-bright)]={data.sort.key === 'price'}
+							>
+								Price{sortIndicator('price')}
+							</a>
+						</th>
+						<th class="eyebrow px-3 py-2.5 text-right">
+							<a
+								href={sortHref('modified')}
+								class="{sortLinkClass} justify-end"
+								class:text-[color:var(--color-gold-bright)]={data.sort.key === 'modified'}
+								title="Last time this item's record was edited"
+							>
+								Modified{sortIndicator('modified')}
+							</a>
+						</th>
 					</tr>
 				</thead>
 				<tbody class="divide-y divide-[color:var(--color-line-dim)]">
@@ -318,6 +489,17 @@
 							</td>
 							<td class="px-3 py-2.5 text-right font-mono text-[color:var(--color-ink)]">
 								{formatPrice(item.price_cents)}
+							</td>
+							<!-- Modified: relative for fresh edits ("2h ago"), absolute
+								 for anything beyond a month. Tooltip carries the full
+								 timestamp for hover. Inlining formatModified() twice
+								 here is cheaper than restructuring around {@const} —
+								 the helper is O(1) (single Date construction). -->
+							<td
+								class="px-3 py-2.5 text-right font-mono text-xs text-[color:var(--color-ink-3)] whitespace-nowrap"
+								title={formatModified(item.updated_at).tooltip}
+							>
+								{formatModified(item.updated_at).label}
 							</td>
 						</tr>
 					{/each}

@@ -70,6 +70,15 @@ export const LABEL_TEMPLATES: Record<string, LabelTemplate> = {
 		widthMm: 76.2,
 		heightMm: 50.8,
 		label: 'Primera LX-610 Color 2″ × 3″'
+	},
+	THERMAL_2x3: {
+		// Dad's off-brand direct-thermal (B&W) printer, 2″ × 3″ labels fed
+		// landscape (3″ long edge first, matching the table convention).
+		// Same geometry + rich renderer as the Primera 2×3; everything is
+		// drawn in near-black ink + QR, so it thermal-prints cleanly.
+		widthMm: 76.2,
+		heightMm: 50.8,
+		label: 'Thermal 2″ × 3″'
 	}
 };
 
